@@ -12,6 +12,6 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
-    @Provides @Singleton fun database(@ApplicationContext context: Context): ProjectDatabase = Room.databaseBuilder(context,ProjectDatabase::class.java,"panofusion.db").build()
+    @Provides @Singleton fun database(@ApplicationContext context: Context): ProjectDatabase = Room.databaseBuilder(context,ProjectDatabase::class.java,"panofusion.db").addMigrations(MIGRATION_1_2).build()
     @Provides @Singleton fun store(@ApplicationContext context: Context, database: ProjectDatabase) = ProjectStore(context,database.dao())
 }

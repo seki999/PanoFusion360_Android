@@ -15,14 +15,13 @@
 
 namespace pano {
 using namespace cv;
-static Mat read(const std::string& p) {
+Mat read(const std::string& p) {
     Mat image=imread(p, IMREAD_COLOR);
     if(image.empty()) throw std::runtime_error("E_IMAGE: 图片损坏或无法读取");
     if(image.total()>2100000) throw std::runtime_error("E_SIZE: 工作帧超过内存预算");
     return image;
 }
-struct Verified { std::vector<DMatch> matches; std::vector<uchar> inliers; Mat H; int count=0; double displacement=0; };
-static Verified match(const std::vector<KeyPoint>& a, const Mat& da, Size sa, const std::vector<KeyPoint>& b, const Mat& db, Size sb) {
+Verified match(const std::vector<KeyPoint>& a, const Mat& da, Size sa, const std::vector<KeyPoint>& b, const Mat& db, Size sb) {
     Verified out;
     if(da.rows<2 || db.rows<2)return out;
     BFMatcher matcher(NORM_HAMMING);
@@ -79,7 +78,7 @@ static void project(const Mat& source,const detail::CameraParams& camera,int wid
     rectangle(valid,Rect(0,0,source.cols,source.rows),Scalar(0),2);
     remap(valid,mask,mapx,mapy,INTER_NEAREST,BORDER_CONSTANT);
 }
-double stitch(const std::vector<std::string>& paths,const std::string& output,int width,const std::string& mode,Progress progress) {
+double stitch(const std::vector<std::string>& paths,const std::string& output,int width,const std::string& mode,int anchorIndex,double referenceYaw,Progress progress) {
     if(paths.size()<2)throw std::runtime_error("E_MATCH: 普通视频/照片至少需要两张重叠关键帧");
     if(paths.size()>24)throw std::runtime_error("E_MEMORY_BUDGET: 首版每次最多 24 张关键帧，请禁用重复帧或缩短视频");
     if(width!=2048 && width!=4096)throw std::runtime_error("E_SIZE: 当前原生渲染支持 2K/4K");
@@ -117,9 +116,14 @@ double stitch(const std::vector<std::string>& paths,const std::string& output,in
     detail::BundleAdjusterRay adjuster;adjuster.setConfThresh(1.0);
     progress("相机全局优化",0,1);
     if(!adjuster(features,pairwise,cameras))throw std::runtime_error("E_OPTIMIZE: 全局优化失败，可能存在视差，请从原位置重新拍摄");
-    Mat anchor=cameras[0].R.t();anchor=anchor.clone();
+    // The persisted anchor frame keeps the project's reference stable across sessions;
+    // the user-selected reference yaw then rotates the whole sphere about the vertical axis.
+    if(anchorIndex<0||anchorIndex>=n)anchorIndex=0;
+    double a=-referenceYaw*CV_PI/180;
+    Mat yaw=(Mat_<float>(3,3)<<float(cos(a)),0.f,float(sin(a)),0.f,1.f,0.f,float(-sin(a)),0.f,float(cos(a)));
+    Mat anchor=yaw*cameras[anchorIndex].R.t();
     FileStorage saved(output+"/cameras.yml",FileStorage::WRITE);
-    saved<<"version"<<1<<"cameras"<<"[";
+    saved<<"version"<<2<<"anchor"<<anchorIndex<<"referenceYaw"<<referenceYaw<<"cameras"<<"[";
     for(int i=0;i<n;i++) {
         auto& c=cameras[i];c.R=anchor*c.R;c.R.convertTo(c.R,CV_64F);
         if(!checkRange(c.R) || !std::isfinite(c.focal) || c.focal<images[i].cols*0.25 || c.focal>images[i].cols*5)throw std::runtime_error("E_GEOMETRY: 相机参数不稳定，拒绝融合");

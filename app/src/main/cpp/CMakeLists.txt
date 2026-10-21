@@ -3,7 +3,7 @@ project(panofusion LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 find_package(OpenCV REQUIRED CONFIG)
 set(STITCHING_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/opencv_stitching)
-add_library(panofusion SHARED panorama_engine.cpp jni_bridge.cpp
+add_library(panofusion SHARED panorama_engine.cpp localizer.cpp jni_bridge.cpp
     ${STITCHING_DIR}/autocalib.cpp ${STITCHING_DIR}/camera.cpp
     ${STITCHING_DIR}/matchers.cpp ${STITCHING_DIR}/motion_estimators.cpp
     ${STITCHING_DIR}/exposure_compensate.cpp ${STITCHING_DIR}/seam_finders.cpp

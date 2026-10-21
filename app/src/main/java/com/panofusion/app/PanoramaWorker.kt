@@ -31,6 +31,7 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
         val settings = SettingsStore.flow(applicationContext).first()
         val initial = dao.project(projectId) ?: return Result.failure()
         val staging = File(store.directory(projectId), "cache/job-$id")
+        val metrics = JobMetrics()
         try {
             setForeground(getForegroundInfo())
             dao.save(initial.copy(status = "处理中", error = null))
@@ -68,6 +69,7 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
                         sharpness = values[0], features = values[1].toInt(), selected = selected, reason = reason))
                     if (selected) previous = file.absolutePath
                 }
+                val analysisStarted = android.os.SystemClock.elapsedRealtime()
                 if (asset.mime.startsWith("video/")) {
                     val metadata = VideoFrameExtractor().extract(asset.path, frameDir, settings.samplingUs) { file, us, fraction ->
                         progress("视频解码 ${index + 1}/${assets.size}", (fraction * 1000).toInt(), 1000)
@@ -84,6 +86,7 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
                     accept(file, 0)
                 }
                 dao.analyzed(asset.id)
+                metrics.analysisMs += android.os.SystemClock.elapsedRealtime() - analysisStarted
             }
             val activeIds = assets.map { it.id }.toSet()
             val allFrames = dao.frames(projectId)
@@ -92,22 +95,31 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
             require(frames.size >= if (erp) 1 else 2) { "E_FRAMES：清晰且非重复的关键帧不足。请补充有纹理且互相重叠的画面。" }
             require(erp || frames.size <= 24) { "当前选中 ${frames.size} 张帧，首版最多融合 24 张，请在关键帧列表禁用重复帧" }
             staging.mkdirs()
+            val anchorKey = initial.anchorFrame
+            val anchorIndex = frames.indexOfFirst { frameKey(it.path) == anchorKey }
+            val anchorMoved = !erp && anchorKey != null && anchorIndex < 0
+            val stitchStarted = android.os.SystemClock.elapsedRealtime()
             val coverage = if (erp) {
                 require(initial.mode == "360") { "完整单目 ERP 视频请使用 360° 工程" }
                 val best = frames.maxBy { it.sharpness }
                 val bitmap = android.graphics.BitmapFactory.decodeFile(best.path) ?: error("ERP 帧读取失败")
                 try {
                     require(bitmap.width == bitmap.height * 2) { "已标记 ERP 视频的画布比例不受支持" }
-                    File(staging,"panorama.png").outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it) }
+                    val oriented = rotateErpYaw(bitmap, initial.referenceYaw)
+                    try { File(staging,"panorama.png").outputStream().use { oriented.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it) } }
+                    finally { if (oriented !== bitmap) oriented.recycle() }
                     val mask = android.graphics.Bitmap.createBitmap(bitmap.width,bitmap.height,android.graphics.Bitmap.Config.ARGB_8888)
                     try { mask.eraseColor(android.graphics.Color.WHITE); File(staging,"coverage.png").outputStream().use { mask.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it) } } finally { mask.recycle() }
                 } finally { bitmap.recycle() }
                 100.0
-            } else NativePanorama.stitch(frames.map { it.path }.toTypedArray(), staging.absolutePath, settings.outputWidth, initial.mode, object: EngineCallback {
-                override fun stage(name: String, completed: Int, total: Int) { setProgressAsync(workDataOf("stage" to name, "done" to completed, "total" to total)) }
+            } else NativePanorama.stitch(frames.map { it.path }.toTypedArray(), staging.absolutePath, settings.outputWidth, initial.mode, anchorIndex.coerceAtLeast(0), initial.referenceYaw, object: EngineCallback {
+                override fun stage(name: String, completed: Int, total: Int) { metrics.stage(name); setProgressAsync(workDataOf("stage" to name, "done" to completed, "total" to total)) }
                 override fun cancelled() = isStopped
             })
+            metrics.stage(null)
+            metrics.stitchMs = android.os.SystemClock.elapsedRealtime() - stitchStarted
             currentCoroutineContext().ensureActive()
+            metrics.write(File(staging, "metrics.json"), frames.size, File(staging, "panorama.png").length())
             // Publish only complete revisions. A failed or cancelled rebuild retains the last good result.
             val history = File(store.directory(projectId), "history")
             val revision = maxOf(initial.revision, history.listFiles()?.mapNotNull { it.name.removePrefix("revision-").toIntOrNull() }?.maxOrNull() ?: 0) + 1
@@ -115,7 +127,9 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
             val destination = File(store.directory(projectId), "history/revision-$revision")
             destination.parentFile?.mkdirs()
             check(!destination.exists() && staging.renameTo(destination)) { "E_SAVE：无法提交新版本" }
-            val committed = (dao.project(projectId) ?: error("工程已删除")).copy(revision = revision, coverage = coverage.takeIf { it >= 0 }, updatedAt = System.currentTimeMillis(), status = "处理完成", error = null)
+            val committed = (dao.project(projectId) ?: error("工程已删除")).copy(revision = revision, coverage = coverage.takeIf { it >= 0 }, updatedAt = System.currentTimeMillis(), status = "处理完成",
+                anchorFrame = if (erp) null else frameKey(frames[anchorIndex.coerceAtLeast(0)].path),
+                error = if (anchorMoved) "原参考锚点帧已禁用，已改用当前第一张关键帧作为参考方向" else null)
             dao.save(committed)
             store.snapshot(projectId)
             return Result.success()
@@ -126,12 +140,54 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
             throw e
         } catch (e: Throwable) {
             if (e is VirtualMachineError && e !is OutOfMemoryError) throw e
-            dao.project(projectId)?.let { dao.save(it.copy(status = "处理失败", error = e.message ?: "E_NATIVE：原生处理失败")) }
+            // The native engine reports cancellation as E_CANCELLED at its next stage boundary.
+            val cancelled = isStopped || e.message.orEmpty().startsWith("E_CANCELLED")
+            val message = if (e is OutOfMemoryError) "E_MEMORY：内存不足，请减少素材、禁用部分关键帧或降低输出宽度" else e.message ?: "E_NATIVE：原生处理失败"
+            dao.project(projectId)?.let { dao.save(if (cancelled) it.copy(status = "已取消", error = "结果保留，可重新处理") else it.copy(status = "处理失败", error = message)) }
             return Result.failure(workDataOf("error" to (e.message ?: "处理失败")))
         } finally { staging.deleteRecursively() }
     }
+    /** Real wall-clock timings and the process peak RSS (VmHWM, reset at job start when the kernel allows it). */
+    private class JobMetrics {
+        private val resetPeak = runCatching { File("/proc/self/clear_refs").writeText("5") }.isSuccess
+        private val started = android.os.SystemClock.elapsedRealtime()
+        var analysisMs = 0L
+        var stitchMs = 0L
+        private val stages = linkedMapOf<String, Long>()
+        private var current: String? = null
+        private var since = 0L
+        fun stage(name: String?) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            current?.let { stages[it] = (stages[it] ?: 0) + now - since }
+            if (name != current) { current = name; since = now } else since = now
+            if (name == null) current = null
+        }
+        fun write(file: File, frames: Int, outputBytes: Long) {
+            val peak = runCatching { File("/proc/self/status").readLines().first { it.startsWith("VmHWM:") }.filter { it.isDigit() }.toLong() * 1024 }.getOrDefault(-1)
+            file.writeText(kotlinx.serialization.json.buildJsonObject {
+                put("frames", kotlinx.serialization.json.JsonPrimitive(frames))
+                put("analysisMs", kotlinx.serialization.json.JsonPrimitive(analysisMs))
+                put("stitchMs", kotlinx.serialization.json.JsonPrimitive(stitchMs))
+                put("totalMs", kotlinx.serialization.json.JsonPrimitive(android.os.SystemClock.elapsedRealtime() - started))
+                put("peakRssBytes", kotlinx.serialization.json.JsonPrimitive(peak))
+                put("peakRssResetAtJobStart", kotlinx.serialization.json.JsonPrimitive(resetPeak))
+                put("nativeHeapBytes", kotlinx.serialization.json.JsonPrimitive(android.os.Debug.getNativeHeapAllocatedSize()))
+                put("panoramaBytes", kotlinx.serialization.json.JsonPrimitive(outputBytes))
+                put("stagesMs", kotlinx.serialization.json.JsonObject(stages.mapValues { kotlinx.serialization.json.JsonPrimitive(it.value) }))
+            }.toString())
+        }
+    }
     private suspend fun progress(stage: String, done: Int, total: Int) = setProgress(workDataOf("stage" to stage, "done" to done, "total" to total))
     companion object {
+        /** Moves the content at [yaw] degrees to the ERP centre; an exact column rotation, no resampling. */
+        fun rotateErpYaw(source: android.graphics.Bitmap, yaw: Double): android.graphics.Bitmap {
+            val w = source.width
+            val dx = Math.floorMod(Math.round(-yaw / 360.0 * w).toInt(), w)
+            if (dx == 0) return source
+            val out = android.graphics.Bitmap.createBitmap(w, source.height, android.graphics.Bitmap.Config.ARGB_8888)
+            android.graphics.Canvas(out).apply { drawBitmap(source, dx.toFloat(), 0f, null); drawBitmap(source, (dx - w).toFloat(), 0f, null) }
+            return out
+        }
         fun enqueue(context: Context, projectId: String) {
             val request = OneTimeWorkRequestBuilder<PanoramaWorker>().setInputData(workDataOf("project" to projectId)).addTag(projectId).build()
             WorkManager.getInstance(context).enqueueUniqueWork("panorama-$projectId", ExistingWorkPolicy.REPLACE, request)

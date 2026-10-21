@@ -44,6 +44,7 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
 }
+ksp { arg("room.schemaLocation", "$projectDir/schemas") }
 dependencies { implementation("androidx.exifinterface:exifinterface:1.3.7") }
 dependencies {
     val camera = "1.4.1"

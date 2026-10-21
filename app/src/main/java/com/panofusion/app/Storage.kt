@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.room.*
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -15,7 +16,12 @@ import java.util.UUID
 @Entity(tableName = "projects")
 data class Project(@PrimaryKey val id: String = UUID.randomUUID().toString(), val name: String,
     val mode: String, val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = createdAt,
-    val revision: Int = 0, val coverage: Double? = null, val status: String = "待处理", val error: String? = null)
+    val revision: Int = 0, val coverage: Double? = null, val status: String = "待处理", val error: String? = null,
+    /** Degrees of yaw moved to the panorama centre; rotates the output without resampling inputs twice. */
+    @ColumnInfo(defaultValue = "0") val referenceYaw: Double = 0.0,
+    /** Frame key (path below frames/) whose camera defines the project's spherical reference. */
+    val anchorFrame: String? = null)
+fun frameKey(path: String) = path.replace('\\','/').substringAfter("/frames/")
 @Serializable
 @Entity(tableName = "sessions", foreignKeys = [ForeignKey(entity = Project::class, parentColumns = ["id"], childColumns = ["projectId"], onDelete = ForeignKey.CASCADE)], indices = [Index("projectId")])
 data class Session(@PrimaryKey val id: String = UUID.randomUUID().toString(), val projectId: String,
@@ -34,6 +40,7 @@ data class Frame(@PrimaryKey val id: String = UUID.randomUUID().toString(), val 
 interface ProjectDao {
     @Query("SELECT * FROM projects ORDER BY updatedAt DESC") fun observe(): Flow<List<Project>>
     @Query("SELECT * FROM projects WHERE id=:id") suspend fun project(id: String): Project?
+    @Query("SELECT * FROM projects") suspend fun allProjects(): List<Project>
     @Upsert suspend fun save(project: Project)
     @Insert suspend fun addSession(session: Session)
     @Insert suspend fun addAsset(asset: Asset)
@@ -54,8 +61,15 @@ interface ProjectDao {
     @Query("UPDATE frames SET enabled=:enabled WHERE id=:id") suspend fun enableFrame(id: String, enabled: Boolean)
     @Query("DELETE FROM frames WHERE projectId=:id") suspend fun clearFrames(id: String)
     @Query("DELETE FROM projects WHERE id=:id") suspend fun delete(id: String)
+    @Transaction suspend fun removeSession(sessionId: String, assetIds: List<String>) { assetIds.forEach { clearAssetFrames(it) }; deleteSessionAssets(sessionId); deleteSession(sessionId) }
 }
-@Database(entities = [Project::class, Session::class, Asset::class, Frame::class], version = 1, exportSchema = false)
+val MIGRATION_1_2 = object: androidx.room.migration.Migration(1,2) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE projects ADD COLUMN referenceYaw REAL NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE projects ADD COLUMN anchorFrame TEXT")
+    }
+}
+@Database(entities = [Project::class, Session::class, Asset::class, Frame::class], version = 2, exportSchema = true)
 abstract class ProjectDatabase: RoomDatabase() { abstract fun dao(): ProjectDao }
 @Serializable
 data class ProjectManifest(val formatVersion: Int = 1, val project: Project, val sessions: List<Session>, val assets: List<Asset>, val frames: List<Frame> = emptyList())
@@ -70,14 +84,15 @@ class ProjectStore(val context: Context, val dao: ProjectDao) {
         temp.writeText(json.encodeToString(ProjectManifest(project = p, sessions = dao.allSessions(id), assets = dao.assets(id), frames = dao.frames(id))))
         check(temp.renameTo(output)) { "工程清单保存失败" }
     }
-    suspend fun import(id: String, uris: List<Uri>) {
+    /** Copies the URIs into a new capture session and returns its id. */
+    suspend fun import(id: String, uris: List<Uri>): String {
         require(uris.isNotEmpty())
         val session = Session(projectId = id)
         val copied = mutableListOf<Asset>()
         try {
             for (uri in uris) {
                 val mime = context.contentResolver.getType(uri) ?: if (uri.scheme == "file" && File(requireNotNull(uri.path)).canonicalFile.toPath().startsWith(context.cacheDir.canonicalFile.toPath())) {
-                    when (File(uri.path!!).extension) { "jpg" -> "image/jpeg"; "mp4" -> "video/mp4"; else -> error("无法识别素材类型") }
+                    when (File(uri.path!!).extension.lowercase()) { "jpg", "jpeg" -> "image/jpeg"; "png" -> "image/png"; "mp4" -> "video/mp4"; else -> error("无法识别素材类型") }
                 } else error("无法识别素材类型")
                 require(mime.startsWith("image/") || mime.startsWith("video/")) { "不支持的素材类型：$mime" }
                 val displayName = if (uri.scheme == "file") File(uri.path!!).name else runCatching {
@@ -97,6 +112,7 @@ class ProjectStore(val context: Context, val dao: ProjectDao) {
             dao.importSession(session, copied)
             dao.project(id)?.let { dao.save(it.copy(updatedAt = System.currentTimeMillis(), status = "素材已导入")) }
             snapshot(id)
+            return session.id
         } catch (e: Exception) {
             // Only the private copy is removed; the external URI is never deleted.
             File(directory(id), "original/${session.id}").deleteRecursively()
@@ -110,11 +126,12 @@ class ProjectStore(val context: Context, val dao: ProjectDao) {
         val manifest = File(result,"inputs.json")
         require(manifest.isFile && File(result,"panorama.png").isFile) { "此版本缺少可恢复输入" }
         val oldFrames = json.decodeFromString<List<Frame>>(manifest.readText())
-        fun key(path: String) = path.replace('\\','/').substringAfter("/frames/")
+        fun key(path: String) = frameKey(path)
         val keys = oldFrames.map { key(it.path) }.toSet()
         val frames = dao.frames(id)
         val usedAssets = frames.filter { key(it.path) in keys }.map { it.assetId }.toSet()
-        require(usedAssets.isNotEmpty()) { "版本素材已删除，无法恢复" }
+        // Every input must still exist, otherwise the restored state could not be regenerated.
+        require(usedAssets.isNotEmpty() && frames.map { key(it.path) }.toSet().containsAll(keys)) { "版本素材已删除，无法恢复" }
         val sessionIds = dao.assets(id).filter { it.id in usedAssets }.map { it.sessionId }.toSet()
         dao.allSessions(id).forEach { dao.enableSession(it.id,it.id in sessionIds) }
         frames.forEach { dao.enableFrame(it.id,key(it.path) in keys) }
@@ -125,6 +142,33 @@ class ProjectStore(val context: Context, val dao: ProjectDao) {
         } finally { bitmap.recycle() }
         dao.save(project.copy(revision = revision,coverage = if(project.mode=="自定义") null else coverage,status = "已恢复版本 $revision",error = null,updatedAt = System.currentTimeMillis()))
         snapshot(id)
+    }
+    /** Removes a capture batch's private copies and keyframes. External source URIs are never touched. */
+    suspend fun deleteSession(id: String, sessionId: String) {
+        val project = requireNotNull(dao.project(id))
+        require(project.status != "处理中") { "请等待当前处理完成后再删除批次" }
+        val assets = dao.assets(id).filter { it.sessionId == sessionId }
+        dao.removeSession(sessionId, assets.map { it.id })
+        assets.forEach { File(directory(id), "frames/${it.id}").deleteRecursively() }
+        File(directory(id), "original/$sessionId").deleteRecursively()
+        dao.save(project.copy(updatedAt = System.currentTimeMillis(), status = "批次已删除，需重新生成"))
+        snapshot(id)
+    }
+    suspend fun setReferenceYaw(id: String, yaw: Double) {
+        require(yaw in -180.0..180.0) { "参考方向超出范围" }
+        val project = requireNotNull(dao.project(id))
+        dao.save(project.copy(referenceYaw = yaw, updatedAt = System.currentTimeMillis())); snapshot(id)
+    }
+    /**
+     * After a crash or forced stop: projects still marked as processing without live work are
+     * flagged as interrupted (their last result is intact) and abandoned staging folders are removed.
+     */
+    suspend fun recoverInterrupted(hasLiveWork: (String) -> Boolean) {
+        for (project in dao.allProjects()) {
+            val live = hasLiveWork(project.id)
+            if (!live && project.status == "处理中") dao.save(project.copy(status = "已中断", error = "上次处理被系统或应用退出中断，已保留之前的结果，可重新处理"))
+            if (!live) File(directory(project.id), "cache").listFiles()?.filter { it.name.startsWith("job-") }?.forEach { it.deleteRecursively() }
+        }
     }
     suspend fun rename(id: String, name: String) { val project = requireNotNull(dao.project(id)); dao.save(project.copy(name = name.ifBlank { project.name }, updatedAt = System.currentTimeMillis())); snapshot(id) }
     suspend fun duplicate(id: String): String {
@@ -153,4 +197,13 @@ class ProjectStore(val context: Context, val dao: ProjectDao) {
 class PanoApplication: Application() {
     @javax.inject.Inject lateinit var database: ProjectDatabase
     @javax.inject.Inject lateinit var store: ProjectStore
+    override fun onCreate() {
+        super.onCreate()
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO).launch {
+            runCatching {
+                val manager = androidx.work.WorkManager.getInstance(this@PanoApplication)
+                store.recoverInterrupted { id -> manager.getWorkInfosForUniqueWork("panorama-$id").get().any { !it.state.isFinished } }
+            }
+        }
+    }
 }
