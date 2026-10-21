@@ -62,7 +62,11 @@ class PanoramaView(context: Context, file: File): GLSurfaceView(context) {
             val ids = IntArray(1); glGenTextures(1, ids, 0); texture = ids[0]; glBindTexture(GL_TEXTURE_2D, texture)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-            BitmapFactory.decodeFile(file.absolutePath)?.let { GLUtils.texImage2D(GL_TEXTURE_2D, 0, it, 0); it.recycle() }
+            val maximum = IntArray(1);glGetIntegerv(GL_MAX_TEXTURE_SIZE,maximum,0)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true };BitmapFactory.decodeFile(file.absolutePath,bounds)
+            var sample = 1
+            while (maxOf(bounds.outWidth,bounds.outHeight)/sample > maximum[0].coerceAtLeast(1)) sample *= 2
+            BitmapFactory.decodeFile(file.absolutePath,BitmapFactory.Options().apply { inSampleSize = sample })?.let { GLUtils.texImage2D(GL_TEXTURE_2D, 0, it, 0); it.recycle() }
         }
         override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) { glViewport(0,0,width,height); aspect = width.toFloat() / height }
         override fun onDrawFrame(gl: GL10?) {

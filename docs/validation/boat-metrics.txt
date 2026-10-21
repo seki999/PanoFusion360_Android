@@ -1,0 +1,4 @@
+coverage=4.533997021908318
+elapsedMs=2604
+pngBytes=117728
+nativeHeapAtEndBytes=6470160
