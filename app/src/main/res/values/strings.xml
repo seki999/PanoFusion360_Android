@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">PanoFusion 360</string>
+    <string name="missing_region">尚未拍摄</string>
+    <string name="not_localized">尚未视觉定位</string>
+</resources>

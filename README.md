@@ -4,7 +4,7 @@
 
 ## 构建
 
-JDK 17、Gradle 8.9、AGP 8.7.3、Kotlin/Compose compiler 2.0.21、Compose BOM 2024.12.01、Room 2.6.1、CameraX 1.4.1、WorkManager 2.10.0、OpenCV 4.12.0、NDK 28.2.13676358、CMake 3.22.1。minSdk 26，compile/targetSdk 35，arm64-v8a / x86_64。
+JDK 17、Gradle 8.9、AGP 8.7.3、Kotlin/Compose compiler 2.0.21、Compose BOM 2024.12.01、Room 2.6.1、Hilt 2.52、CameraX 1.4.1、WorkManager 2.10.0、OpenCV 4.12.0、NDK 28.2.13676358、CMake 3.22.1。minSdk 26，compile/targetSdk 35，arm64-v8a / x86_64。
 
 ```powershell
 .\gradlew.bat :app:assembleDebug

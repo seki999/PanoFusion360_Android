@@ -3,6 +3,8 @@ package com.panofusion.app
 import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -31,13 +33,16 @@ fun ProjectDetails(project: Project, store: ProjectStore, runAction: (suspend ()
         }) }
     }
     val sessions by store.dao.sessions(project.id).collectAsState(initial = emptyList())
+    var assets by remember(project.id) { mutableStateOf(emptyList<Asset>()) }
     var frames by remember(project.id) { mutableStateOf(emptyList<Frame>()) }
+    var history by remember { mutableStateOf(false) }
     var sphere by remember { mutableStateOf(true) }
     var showMask by remember { mutableStateOf(false) }
-    var exportJpeg by remember { mutableStateOf(false) }
+    var mapMessage by remember { mutableStateOf<String?>(null) }
     val jobs by WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow("panorama-${project.id}").collectAsState(initial = emptyList())
     val job = jobs.firstOrNull()
-    LaunchedEffect(project.id, project.status, job?.progress) { frames = withContext(Dispatchers.IO) { store.dao.frames(project.id) } }
+    mapMessage?.let { text -> AlertDialog(onDismissRequest = { mapMessage = null },title = { Text("球面区域") },text = { Text(text) },confirmButton = { TextButton(onClick = { mapMessage = null }) { Text("确定") } }) }
+    LaunchedEffect(project.id, project.status, job?.progress) { frames = withContext(Dispatchers.IO) { store.dao.frames(project.id) }; assets = withContext(Dispatchers.IO) { store.dao.assets(project.id) } }
     Text("未识别投影的视频按普通透视处理；明确标记的单目 ERP 自动选取最佳帧。", style = MaterialTheme.typography.labelSmall)
     val source = File(store.directory(project.id), "history/revision-${project.revision}/panorama.png")
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri -> if (uri != null) runAction {
@@ -58,13 +63,28 @@ fun ProjectDetails(project: Project, store: ProjectStore, runAction: (suspend ()
         else LinearProgressIndicator(Modifier.fillMaxWidth())
     }
     project.coverage?.let { Text("实际球面覆盖 %.2f%%".format(it)) }
+    if (history) AlertDialog(onDismissRequest = { history = false }, title = { Text("恢复成功版本") }, text = {
+        Column { File(store.directory(project.id),"history").listFiles()?.filter { File(it,"panorama.png").exists() }?.sortedByDescending { it.name.removePrefix("revision-").toIntOrNull() ?: 0 }?.forEach { file ->
+            TextButton(onClick = { history = false;runAction { store.restoreRevision(project.id,file.name.removePrefix("revision-").toInt()) } }) { Text(file.name) }
+        } }
+    },confirmButton = { TextButton(onClick = { history = false }) { Text("关闭") } })
     if (source.exists()) {
-        Row { TextButton(onClick = { sphere = !sphere }) { Text(if (sphere) "展开图" else "球面浏览") }; TextButton(onClick = { showMask = !showMask; sphere = false }) { Text("覆盖 Mask") } }
+        Row { TextButton(enabled = job == null || job.state.isFinished,onClick = { history = true }) { Text("历史") }; TextButton(onClick = { sphere = !sphere }) { Text(if (sphere) "展开图" else "球面浏览") }; TextButton(onClick = { showMask = !showMask; sphere = false }) { Text("覆盖 Mask") } }
         if (sphere) key(project.revision) { AndroidView(factory = { PanoramaView(it, source) }, modifier = Modifier.fillMaxWidth().height(210.dp)) }
         else {
-            val file = if (showMask) File(source.parentFile,"coverage.png") else source
+            val preview = File(source.parentFile,"coverage-preview.png")
+            val file = if (showMask) (if (preview.exists()) preview else File(source.parentFile,"coverage.png")) else source
             val bitmap = remember(project.revision, showMask) { BitmapFactory.decodeFile(file.absolutePath) }
-            bitmap?.let { Image(it.asImageBitmap(), "展开图：透明区域尚未拍摄", Modifier.fillMaxWidth().height(150.dp)) }
+            bitmap?.let { image -> Image(image.asImageBitmap(), "展开图：透明区域尚未拍摄", Modifier.fillMaxWidth().aspectRatio(2f).pointerInput(image) {
+                detectTapGestures { offset ->
+                    val x = (offset.x/size.width*image.width).toInt().coerceIn(0,image.width-1)
+                    val y = (offset.y/size.height*image.height).toInt().coerceIn(0,image.height-1)
+                    val mask = BitmapFactory.decodeFile(File(source.parentFile,"coverage.png").path)
+                    val observed = mask?.let { android.graphics.Color.red(it.getPixel(x,y))>0 } ?: false
+                    mask?.recycle()
+                    mapMessage = "水平 %.1f° / 垂直 %.1f°\n%s\n%s".format(x.toDouble()/image.width*360-180,90-y.toDouble()/image.height*180,if(observed) "已融合；绿色为清晰区域，黄色为低纹理或曝光风险" else "尚未融合",if(observed) "可补拍改善质量" else "请先对准已拍区域建立视觉重叠，再转向此方向")
+                }
+            }) }
         }
         Row {
             TextButton(onClick = { export.launch(if (showMask) "coverage.png" else "panorama.png") }) { Text("导出 PNG") }
@@ -74,10 +94,14 @@ fun ProjectDetails(project: Project, store: ProjectStore, runAction: (suspend ()
         Text("普通视频原生 2K；ERP 保留解码尺寸。JPEG 缺失区域深灰。", style = MaterialTheme.typography.labelSmall)
     }
     TextButton(onClick = { capture = true }) { Text("打开摄像头继续拍摄") }
+    TextButton(enabled = job == null || job.state.isFinished,onClick = { runAction { store.dao.resetAnalysis(project.id); PanoramaWorker.enqueue(context,project.id) } }) { Text("按当前设置重新分析（重置帧选择）") }
     Text("素材批次 ${sessions.size} · 关键帧 ${frames.count { it.selected && it.enabled }}/${frames.size}")
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp, max = 350.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         items(sessions, key = { it.id }) { session -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(java.text.DateFormat.getDateTimeInstance().format(java.util.Date(session.createdAt)))
+            Column(Modifier.weight(1f)) {
+                Text(java.text.DateFormat.getDateTimeInstance().format(java.util.Date(session.createdAt)))
+                assets.filter { it.sessionId == session.id }.forEach { asset -> Text("${asset.displayName} · ${asset.mime}" + if(asset.width>0) " ${asset.width}×${asset.height}" else "", style = MaterialTheme.typography.labelSmall) }
+            }
             Switch(checked = session.enabled, onCheckedChange = { enabled -> runAction {
                 store.dao.enableSession(session.id, enabled); store.snapshot(project.id)
                 PanoramaWorker.enqueue(context, project.id)

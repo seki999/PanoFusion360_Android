@@ -10,7 +10,7 @@ import java.io.File
 /** Bounded streaming decoder. Android YUV planes can have independent row/pixel strides. */
 class VideoFrameExtractor {
     data class Metadata(val width: Int, val height: Int, val durationUs: Long, val rotation: Int, val mime: String)
-    suspend fun extract(path: String, output: File, onFrame: suspend (File, Long, Double) -> Unit): Metadata {
+    suspend fun extract(path: String, output: File, samplingUs: Long = 500_000, onFrame: suspend (File, Long, Double) -> Unit): Metadata {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
@@ -63,7 +63,7 @@ class VideoFrameExtractor {
                             try { file.outputStream().use { check(scaled.compress(Bitmap.CompressFormat.JPEG, 94, it)) } }
                             finally { if (scaled !== rotated) scaled.recycle(); if (rotated !== bitmap) rotated.recycle(); bitmap.recycle() }
                             onFrame(file, info.presentationTimeUs, info.presentationTimeUs.toDouble() / duration)
-                            nextUs = info.presentationTimeUs + 500_000L
+                            nextUs = info.presentationTimeUs + samplingUs
                             count++
                         }
                         outputEnded = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
@@ -72,7 +72,9 @@ class VideoFrameExtractor {
             }
             require(count > 0) { "E_DECODE_EMPTY：视频未产生有效画面" }
             return meta
-        } finally { runCatching { codec?.stop() }; codec?.release(); extractor.release() }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { throw IllegalStateException("E_DECODE：无法处理此视频。${e.message ?: e.javaClass.simpleName}。请确认文件完整且设备支持其编码。",e) }
+        finally { runCatching { codec?.stop() }; codec?.release(); extractor.release() }
     }
     private fun yuvBitmap(image: Image): Bitmap {
         val crop = image.cropRect

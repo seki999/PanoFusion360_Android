@@ -1,0 +1,3 @@
+Test assets boat1.jpg and boat2.jpg are from the official OpenCV extra repository tag 4.12.0:
+https://github.com/opencv/opencv_extra/tree/4.12.0/testdata/stitching
+Repository license: Apache-2.0. These files are instrumentation inputs only, not app outputs or demonstration results.

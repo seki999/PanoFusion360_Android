@@ -60,9 +60,40 @@ class PanoramaIntegrationTest {
         assertEquals(first.first,undo.first,0.3)
         assertTrue(File(first.second,"panorama.png").isFile)
     }
+    @Test fun officialBoatPhotographsProduceRealMaskedPanorama() {
+        val testContext = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().context
+        val inputs = listOf("boat1.jpg","boat2.jpg").map { name ->
+            val original = File(root,"original-$name")
+            testContext.assets.open(name).use { input -> original.outputStream().use { input.copyTo(it) } }
+            val work = File(root,name)
+            ImageInput.prepare(original.path,work)
+            work
+        }
+        val started = android.os.SystemClock.elapsedRealtime()
+        val stages = mutableListOf<String>()
+        val output = File(root,"real-scene").apply { mkdirs() }
+        val coverage = NativePanorama.stitch(inputs.map { it.path }.toTypedArray(),output.path,2048,"360",object: EngineCallback {
+            override fun stage(name: String, completed: Int, total: Int) { if (stages.lastOrNull() != name) stages += name }
+            override fun cancelled() = false
+        })
+        val elapsed = android.os.SystemClock.elapsedRealtime()-started
+        assertTrue(coverage>0 && coverage<100)
+        val image = BitmapFactory.decodeFile(File(output,"panorama.png").path)
+        assertNotNull(image);assertEquals(2048,image.width);image.recycle()
+        assertTrue(stages.contains("相机全局优化"));assertTrue(stages.contains("球面投影与多频带融合"))
+        val artifacts = File(context.getExternalFilesDir(null),"validation").apply { mkdirs() }
+        for (name in listOf("panorama.png","coverage.png","quality.png","coverage-preview.png","cameras.yml")) File(output,name).copyTo(File(artifacts,"boat-$name"),overwrite=true)
+        File(artifacts,"boat-metrics.txt").writeText("coverage=$coverage\nelapsedMs=$elapsed\npngBytes=${File(output,"panorama.png").length()}\nnativeHeapAtEndBytes=${android.os.Debug.getNativeHeapAllocatedSize()}\n")
+        println("REAL_BOAT_RESULT coverage=$coverage elapsedMs=$elapsed pngBytes=${File(output,"panorama.png").length()} nativeHeapBytes=${android.os.Debug.getNativeHeapAllocatedSize()}")
+    }
     @Test fun unrelatedSceneRejected() {
         try { stitch(listOf(frame(0.0),frame(0.3),frame(0.6,997)),"mismatch"); fail("Unrelated scene was fused") }
         catch (e: IllegalStateException) { assertTrue(e.message.orEmpty().contains("E_DISCONNECTED")) }
+    }
+    @Test fun corruptImageIsRejected() {
+        val bad = File(root,"empty.jpg").apply { writeBytes(byteArrayOf()) }
+        try { NativePanorama.analyze(bad.path,null);fail("Empty input was accepted") }
+        catch (e: IllegalStateException) { assertTrue(e.message.orEmpty().contains("E_IMAGE")) }
     }
     @Test fun cancellationDoesNotPublish() {
         val out = File(root,"cancel").apply { mkdirs() }

@@ -10,6 +10,7 @@ import androidx.work.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.first
 import java.io.File
 
 class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorker(context, params) {
@@ -27,6 +28,7 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
         val app = applicationContext as PanoApplication
         val dao = app.database.dao()
         val store = app.store
+        val settings = SettingsStore.flow(applicationContext).first()
         val initial = dao.project(projectId) ?: return Result.failure()
         val staging = File(store.directory(projectId), "cache/job-$id")
         try {
@@ -55,7 +57,7 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
                     currentCoroutineContext().ensureActive()
                     val values = NativePanorama.analyze(file.absolutePath, previous)
                     val reason = when {
-                        values[0] < 35 -> "画面模糊"
+                        values[0] < settings.sharpness -> "画面模糊"
                         !erp && values[1] < 60 -> "特征点不足"
                         values[2] > 0.75 -> "严重过曝或欠曝"
                         !erp && previous != null && values[3] > 0.03 && values[4] < 14 -> "与上一帧重复"
@@ -67,19 +69,26 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
                     if (selected) previous = file.absolutePath
                 }
                 if (asset.mime.startsWith("video/")) {
-                    VideoFrameExtractor().extract(asset.path, frameDir) { file, us, fraction ->
+                    val metadata = VideoFrameExtractor().extract(asset.path, frameDir, settings.samplingUs) { file, us, fraction ->
                         progress("视频解码 ${index + 1}/${assets.size}", (fraction * 1000).toInt(), 1000)
                         accept(file, us)
                     }
+                    dao.metadata(asset.id,metadata.width,metadata.height,metadata.durationUs/1000,metadata.rotation)
                 } else {
                     val file = File(frameDir, "photo.jpg")
                     ImageInput.prepare(asset.path, file)
+                    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    android.graphics.BitmapFactory.decodeFile(asset.path,bounds)
+                    val rotation = androidx.exifinterface.media.ExifInterface(asset.path).rotationDegrees
+                    dao.metadata(asset.id,bounds.outWidth,bounds.outHeight,null,rotation)
                     accept(file, 0)
                 }
                 dao.analyzed(asset.id)
             }
             val activeIds = assets.map { it.id }.toSet()
-            val frames = dao.frames(projectId).filter { it.assetId in activeIds && it.selected && it.enabled }
+            val allFrames = dao.frames(projectId)
+            require(assets.all { asset -> allFrames.any { it.assetId == asset.id && it.selected } }) { "E_ASSET_QUALITY：至少一项素材没有可用关键帧，请检查淘汰原因或禁用该批次" }
+            val frames = allFrames.filter { it.assetId in activeIds && it.selected && it.enabled }
             require(frames.size >= if (erp) 1 else 2) { "E_FRAMES：清晰且非重复的关键帧不足。请补充有纹理且互相重叠的画面。" }
             require(erp || frames.size <= 24) { "当前选中 ${frames.size} 张帧，首版最多融合 24 张，请在关键帧列表禁用重复帧" }
             staging.mkdirs()
@@ -94,13 +103,15 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
                     try { mask.eraseColor(android.graphics.Color.WHITE); File(staging,"coverage.png").outputStream().use { mask.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it) } } finally { mask.recycle() }
                 } finally { bitmap.recycle() }
                 100.0
-            } else NativePanorama.stitch(frames.map { it.path }.toTypedArray(), staging.absolutePath, 2048, initial.mode, object: EngineCallback {
+            } else NativePanorama.stitch(frames.map { it.path }.toTypedArray(), staging.absolutePath, settings.outputWidth, initial.mode, object: EngineCallback {
                 override fun stage(name: String, completed: Int, total: Int) { setProgressAsync(workDataOf("stage" to name, "done" to completed, "total" to total)) }
                 override fun cancelled() = isStopped
             })
             currentCoroutineContext().ensureActive()
             // Publish only complete revisions. A failed or cancelled rebuild retains the last good result.
-            val revision = initial.revision + 1
+            val history = File(store.directory(projectId), "history")
+            val revision = maxOf(initial.revision, history.listFiles()?.mapNotNull { it.name.removePrefix("revision-").toIntOrNull() }?.maxOrNull() ?: 0) + 1
+            File(staging,"inputs.json").writeText(kotlinx.serialization.json.Json.encodeToString(kotlinx.serialization.builtins.ListSerializer(Frame.serializer()), frames))
             val destination = File(store.directory(projectId), "history/revision-$revision")
             destination.parentFile?.mkdirs()
             check(!destination.exists() && staging.renameTo(destination)) { "E_SAVE：无法提交新版本" }

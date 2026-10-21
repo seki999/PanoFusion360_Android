@@ -1,7 +1,7 @@
 #include "panorama_engine.hpp"
 #include <jni.h>
 #include <stdexcept>
-static std::string str(JNIEnv* e,jstring s){if(!s)return {};const char* p=e->GetStringUTFChars(s,nullptr);std::string v(p);e->ReleaseStringUTFChars(s,p);return v;}
+static std::string str(JNIEnv* e,jstring s){if(!s)return {};const char* p=e->GetStringUTFChars(s,nullptr);if(!p)throw std::bad_alloc();std::string v(p);e->ReleaseStringUTFChars(s,p);return v;}
 static void fail(JNIEnv* e,const char* text){ if(!e->ExceptionCheck()) e->ThrowNew(e->FindClass("java/lang/IllegalStateException"),text); }
 extern "C" JNIEXPORT jdoubleArray JNICALL Java_com_panofusion_app_NativePanorama_analyze(JNIEnv* e,jobject,jstring path,jstring prev) {
     try {auto a=pano::analyze(str(e,path),str(e,prev));double values[]={a.sharpness,a.features,a.clipped,a.overlap,a.displacement};auto out=e->NewDoubleArray(5);e->SetDoubleArrayRegion(out,0,5,values);return out;}

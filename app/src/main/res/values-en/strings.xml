@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">PanoFusion 360</string>
+    <string name="missing_region">Not captured</string>
+    <string name="not_localized">Visual localization pending</string>
+</resources>

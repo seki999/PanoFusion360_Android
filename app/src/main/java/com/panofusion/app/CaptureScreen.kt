@@ -31,7 +31,7 @@ fun CaptureScreen(onClose: () -> Unit, onAccept: (File) -> Unit) {
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { permission = it }
     var photo by remember { mutableStateOf<ImageCapture?>(null) }
     var video by remember { mutableStateOf<VideoCapture<Recorder>?>(null) }
-    var camera by remember { mutableStateOf<Camera?>(null) }
+    var camera by remember { mutableStateOf<androidx.camera.core.Camera?>(null) }
     var recording by remember { mutableStateOf<Recording?>(null) }
     var elapsed by remember { mutableStateOf(0L) }
     var pending by remember { mutableStateOf<File?>(null) }
@@ -107,3 +107,4 @@ fun CaptureScreen(onClose: () -> Unit, onAccept: (File) -> Unit) {
         }
     }
 }
+

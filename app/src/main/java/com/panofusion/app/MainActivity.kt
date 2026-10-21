@@ -5,6 +5,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -17,31 +19,38 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@dagger.hilt.android.AndroidEntryPoint
 class MainActivity: ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme(colorScheme = darkColorScheme()) { Surface(Modifier.fillMaxSize()) { PanoScreen((application as PanoApplication).store) } } }
+        val model = androidx.lifecycle.ViewModelProvider(this)[ProjectViewModel::class.java]
+        setContent { MaterialTheme(colorScheme = if(androidx.compose.foundation.isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) { Surface(Modifier.fillMaxSize()) { PanoScreen(model) } } }
     }
 }
 @Composable
-fun PanoScreen(store: ProjectStore) {
-    val projects by store.dao.observe().collectAsState(initial = emptyList())
+fun PanoScreen(model: ProjectViewModel) {
+    val store = model.store
+    val projects by model.projects.collectAsState(initial = emptyList())
     var current by remember { mutableStateOf<String?>(null) }
+    var settings by remember { mutableStateOf(false) }
     var create by remember { mutableStateOf(false) }
+    var rename by remember { mutableStateOf(false) }
     var delete by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
     var mode by remember { mutableStateOf("360") }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
-    fun runAction(action: suspend () -> Unit) { scope.launch { try { withContext(Dispatchers.IO) { action() } } catch (e: Exception) { message = e.message ?: "操作失败" } } }
+    fun runAction(action: suspend () -> Unit) { model.execute(action) }
+    LaunchedEffect(model) { model.errors.collect { message = it } }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> current?.let { id -> if (uris.isNotEmpty()) runAction { store.import(id, uris) } } }
     val importProject = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) runAction { current = Exporter.restore(store, uri) } }
     val project = projects.firstOrNull { it.id == current }
-    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    val scroll = rememberScrollState()
+    Column(Modifier.fillMaxSize().safeDrawingPadding().then(if(project != null) Modifier.verticalScroll(scroll) else Modifier).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("PanoFusion 360", style = MaterialTheme.typography.headlineLarge)
         Text("离线全景 · 保留每一次拍摄", style = MaterialTheme.typography.bodyMedium)
         if (project == null) {
-            Row { Button(onClick = { create = true }) { Text("新建全景") }; TextButton(onClick = { importProject.launch(arrayOf("application/zip", "application/octet-stream")) }) { Text("导入工程包") } }
+            Row { TextButton(onClick = { settings = true }) { Text("设置") }; Button(onClick = { create = true }) { Text("新建全景") }; TextButton(onClick = { importProject.launch(arrayOf("application/zip", "application/octet-stream")) }) { Text("导入工程包") } }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(projects, key = { it.id }) { p -> Card(Modifier.fillMaxWidth().clickable { current = p.id }) {
                     Column(Modifier.padding(16.dp)) { Text(p.name, style = MaterialTheme.typography.titleLarge); Text("${p.mode}° · ${p.status}"); Text(p.coverage?.let { "球面覆盖 %.2f%%".format(it) } ?: "尚未计算覆盖率") }
@@ -51,14 +60,16 @@ fun PanoScreen(store: ProjectStore) {
             Text(project.name, style = MaterialTheme.typography.headlineMedium)
             Text(project.status)
             project.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Row { TextButton(onClick = { current = null }) { Text("返回") }; TextButton(onClick = { delete = true }) { Text("删除工程") } }
+            Row { TextButton(onClick = { current = null }) { Text("返回") }; TextButton(onClick = { name = project.name;rename = true }) { Text("改名") }; TextButton(onClick = { runAction { current = store.duplicate(project.id) } }) { Text("复制") }; TextButton(onClick = { delete = true }) { Text("删除工程") } }
             Button(onClick = { picker.launch(arrayOf("video/*", "image/*")) }) { Text("导入视频 / 照片（新补拍批次）") }
             ProjectDetails(project, store, ::runAction)
         }
     }
+    if (settings) SettingsDialog(store.context) { settings = false }
     if (create) AlertDialog(onDismissRequest = { create = false }, title = { Text("新建全景工程") }, text = {
         Column { OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("名称") }); listOf("360", "180", "自定义").forEach { m -> Row(Modifier.clickable { mode = m }) { RadioButton(selected = mode == m, onClick = { mode = m }); Text(m, Modifier.padding(top = 12.dp)) } } }
     }, confirmButton = { TextButton(onClick = { create = false; runAction { current = store.create(name, mode).id } }) { Text("创建") } }, dismissButton = { TextButton(onClick = { create = false }) { Text("取消") } })
+    if (rename && project != null) AlertDialog(onDismissRequest = { rename = false }, title = { Text("修改工程名称") }, text = { OutlinedTextField(value = name, onValueChange = { name = it }) }, confirmButton = { TextButton(onClick = { rename = false;runAction { store.rename(project.id,name) } }) { Text("保存") } })
     if (delete && project != null) AlertDialog(onDismissRequest = { delete = false }, title = { Text("删除此工程？") }, text = { Text("删除应用内素材副本及结果。手机原始文件保留。") }, confirmButton = { TextButton(onClick = { delete = false; current = null; runAction { store.delete(project.id) } }) { Text("删除") } }, dismissButton = { TextButton(onClick = { delete = false }) { Text("取消") } })
     message?.let { AlertDialog(onDismissRequest = { message = null }, title = { Text("操作提示") }, text = { Text(it) }, confirmButton = { TextButton(onClick = { message = null }) { Text("确定") } }) }
 }

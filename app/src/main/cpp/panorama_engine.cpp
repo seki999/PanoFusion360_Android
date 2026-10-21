@@ -57,7 +57,7 @@ Analysis analyze(const std::string& p, const std::string& prev) {
     }
     return a;
 }
-static void project(const Mat& source,const detail::CameraParams& camera,int width,Mat& warped,Mat& mask) {
+static void project(const Mat& source,const detail::CameraParams& camera,int width,Mat& warped,Mat& mask,const Mat* qualitySource=nullptr,Mat* qualityOutput=nullptr) {
     int height=width/2;
     Mat mapx(height,width,CV_32F),mapy(height,width,CV_32F);
     Mat transform=camera.K()*camera.R.t();Matx33d t;
@@ -73,6 +73,7 @@ static void project(const Mat& source,const detail::CameraParams& camera,int wid
         }
     }
     remap(source,warped,mapx,mapy,INTER_LINEAR,BORDER_CONSTANT);
+    if(qualitySource && qualityOutput)remap(*qualitySource,*qualityOutput,mapx,mapy,INTER_LINEAR,BORDER_CONSTANT);
     Mat valid(source.size(),CV_8U,Scalar(255));
     // Erode source bounds to keep interpolation from introducing a black rim.
     rectangle(valid,Rect(0,0,source.cols,source.rows),Scalar(0),2);
@@ -137,14 +138,19 @@ double stitch(const std::vector<std::string>& paths,const std::string& output,in
     progress("接缝搜索",0,1);
     detail::GraphCutSeamFinder seamFinder("COST_COLOR_GRAD");seamFinder.find(small,corners,seams);
     detail::MultiBandBlender blender(false,5);blender.prepare(Rect(0,0,width,width/2));
-    Mat coverage(width/2,width,CV_8U,Scalar(0));
+    Mat coverage(width/2,width,CV_8U,Scalar(0)),quality(width/2,width,CV_8U,Scalar(0));
     for(int i=0;i<n;i++) {
         progress("球面投影与多频带融合",i,n);
-        Mat w,m;project(images[i],cameras[i],width,w,m);bitwise_or(coverage,m,coverage);
+        Mat gray,lap,energy,localQuality,warpedQuality;
+        cvtColor(images[i],gray,COLOR_BGR2GRAY);Laplacian(gray,lap,CV_32F);multiply(lap,lap,energy);blur(energy,energy,Size(31,31));sqrt(energy,energy);energy.convertTo(localQuality,CV_8U,8);
+        localQuality.setTo(0,(gray<12)|(gray>243));
+        Mat w,m;project(images[i],cameras[i],width,w,m,&localQuality,&warpedQuality);bitwise_or(coverage,m,coverage);
+        warpedQuality.setTo(0,m==0);max(quality,warpedQuality,quality);
         exposure->apply(i,Point(0,0),w,m);
         Mat seam,dilated;dilate(seams[i].getMat(ACCESS_READ),dilated,Mat());resize(dilated,seam,m.size(),0,0,INTER_NEAREST);bitwise_and(seam,m,seam);
         Mat signedImage;w.convertTo(signedImage,CV_16S);blender.feed(signedImage,seam,Point(0,0));images[i].release();
     }
+    Mat observed=coverage.clone();
     progress("输出融合结果",0,1);
     Mat blended,blendMask;blender.blend(blended,blendMask);Mat color;blended.convertTo(color,CV_8U);
     // Only actual blended and projected source pixels count as covered.
@@ -159,6 +165,11 @@ double stitch(const std::vector<std::string>& paths,const std::string& output,in
             denominator+=area;if(coverage.at<uchar>(y,x))numerator+=area;
         }
     }
+    quality.setTo(0,coverage==0);
+    Mat coveragePreview(coverage.size(),CV_8UC3,Scalar(55,55,55));
+    coveragePreview.setTo(Scalar(75,175,65),(coverage>0)&(quality>=50));
+    coveragePreview.setTo(Scalar(30,190,235),(coverage>0)&(quality<50));
+    if(!imwrite(output+"/quality.png",quality)||!imwrite(output+"/observed.png",observed)||!imwrite(output+"/coverage-preview.png",coveragePreview))throw std::runtime_error("E_WRITE: 质量或覆盖数据保存失败");
     progress("保存图片和覆盖 Mask",0,1);
     if(!imwrite(output+"/panorama.png",rgba)||!imwrite(output+"/coverage.png",coverage))throw std::runtime_error("E_WRITE: 结果保存失败，请检查空间");
     progress("完成",1,1);

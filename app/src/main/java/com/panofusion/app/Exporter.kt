@@ -27,7 +27,7 @@ object Exporter {
         store.snapshot(id)
         val root = store.directory(id)
         val project = store.dao.project(id) ?: error("工程不存在")
-        val manifest = ProjectManifest(project = project, sessions = store.dao.allSessions(id), assets = store.dao.assets(id).map { it.copy(path = File(it.path).relativeTo(root).invariantSeparatorsPath) })
+        val manifest = ProjectManifest(project = project, sessions = store.dao.allSessions(id), assets = store.dao.assets(id).map { it.copy(path = File(it.path).relativeTo(root).invariantSeparatorsPath) }, frames = store.dao.frames(id).map { it.copy(path = File(it.path).relativeTo(root).invariantSeparatorsPath) })
         store.context.contentResolver.openOutputStream(uri).use { stream ->
             requireNotNull(stream)
             ZipOutputStream(stream).use { zip ->
@@ -69,15 +69,22 @@ object Exporter {
             val manifest = json.decodeFromString<ProjectManifest>(manifestFile.readText())
             require(manifest.formatVersion == 1) { "不支持此工程版本" }
             val sessionMap = manifest.sessions.associate { it.id to UUID.randomUUID().toString() }
+            val assetIds = manifest.assets.associate { it.id to UUID.randomUUID().toString() }
             val assets = manifest.assets.map { asset ->
                 val file = File(root,asset.path).canonicalFile
                 require(file.toPath().startsWith(root.canonicalFile.toPath()) && file.isFile) { "工程素材丢失" }
-                asset.copy(id = UUID.randomUUID().toString(), projectId = id, sessionId = sessionMap[asset.sessionId] ?: error("批次引用无效"), path = file.path, analyzed = false)
+                asset.copy(id = assetIds.getValue(asset.id), projectId = id, sessionId = sessionMap[asset.sessionId] ?: error("批次引用无效"), path = file.path, analyzed = manifest.frames.any { it.assetId == asset.id })
             }
+            require(manifest.project.mode in listOf("360","180","自定义")) { "工程模式无效" }
             val project = manifest.project.copy(id = id, name = manifest.project.name + "（导入）", status = "工程已恢复", error = null)
             store.dao.restore(project, manifest.sessions.map { it.copy(id = sessionMap.getValue(it.id),projectId = id) }, assets)
+            manifest.frames.forEach { frame ->
+                val file = File(root,frame.path).canonicalFile
+                require(file.toPath().startsWith(root.canonicalFile.toPath()) && file.isFile) { "关键帧丢失或路径无效" }
+                store.dao.addFrame(frame.copy(id = UUID.randomUUID().toString(), projectId = id, assetId = assetIds[frame.assetId] ?: error("关键帧引用无效"), path = file.path))
+            }
             store.snapshot(id)
             return id
-        } catch (e: Exception) { store.dao.delete(id); root.deleteRecursively(); throw e }
+        } catch (e: Exception) { store.dao.clearFrames(id); store.dao.delete(id); root.deleteRecursively(); throw e }
     }
 }
