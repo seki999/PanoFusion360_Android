@@ -12,7 +12,7 @@ JDK 17、Gradle 8.9、AGP 8.7.3、Kotlin/Compose compiler 2.0.21、Compose BOM 2
 .\gradlew.bat :app:connectedDebugAndroidTest
 ```
 
-macOS/Linux 使用 `./gradlew`。设置 `ANDROID_HOME` 或 `local.properties` 中的 `sdk.dir`。首次构建需要从 Google Maven、Maven Central 和 Gradle 官方仓库下载依赖，应用运行时不需要网络。OpenCV 使用官方 Maven AAR 的 Prefab 头文件与原生库，不使用运行时下载模型。
+macOS/Linux 使用 `./gradlew`。设置 `ANDROID_HOME` 或 `local.properties` 中的 `sdk.dir`。首次构建需要从 Google Maven、Maven Central 和 Gradle 官方仓库下载依赖，应用运行时不需要网络。OpenCV 使用官方 Maven AAR 的 Prefab 头文件与原生库；AAR 未导出的 stitching/detail 由仓库内同版本官方 CPU 源码补编，不使用运行时下载模型。
 
 调试 APK 目标路径：`app/build/outputs/apk/debug/app-debug.apk`。该路径存在且构建通过后才表示已生成 APK。`-PskipNative` 仅供原生工具链安装期间检查 Kotlin/数据库，不可用于最终交付。
 

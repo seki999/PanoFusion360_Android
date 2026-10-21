@@ -2,7 +2,7 @@
 
 - [x] Phase 1 工程、Room、SAF 素材副本、项目恢复
 - [x] Phase 2 系统解码、真实清晰度和关键帧筛选
-- [ ] Phase 3 OpenCV JNI、旋转相机估计和多频带融合
+- [x] Phase 3 OpenCV JNI、旋转相机估计和多频带融合
 - [ ] Phase 4 球面 Mask、面积加权覆盖率和预览
 - [ ] Phase 5 Session、重建、撤销和参考方向
 - [ ] Phase 6 CameraX 拍摄与辅助引导
@@ -14,3 +14,5 @@
 2026-10-22：应用层 assembleDebug（skipNative）、8 项 JVM 测试通过；API35 x86_64 模拟器 3 项创建/复制/原件保护/数据库恢复测试通过。初次原件保护测试暴露 REPLACE 级联删除问题，改用 Upsert 后重测通过。后续阶段仍待完整 JNI 集成测试。
 
 Phase 2：真实 H.264 编码样本→系统解码→6 个采样时间戳→实际质量分析→WorkManager 视频关键帧选择与拼接，完整套件通过。样本为已知旋转相机的可复现合成视频，不代表真实手持视频质量验收。
+
+Phase 3：官方 OpenCV 4.12.0 stitching CPU 源码与官方同版本 AAR 联接，arm64/x86_64 构建成功；真实照片匹配、相机优化、GraphCut 与多频带输出测试通过。
