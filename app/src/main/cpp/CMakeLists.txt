@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(panofusion LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+find_package(OpenCV REQUIRED CONFIG)
+add_library(panofusion SHARED panorama_engine.cpp jni_bridge.cpp)
+target_link_libraries(panofusion OpenCV::opencv_java4 log)
+target_link_options(panofusion PRIVATE "-Wl,-z,max-page-size=16384")
