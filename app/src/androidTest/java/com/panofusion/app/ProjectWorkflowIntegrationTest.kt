@@ -41,13 +41,18 @@ class ProjectWorkflowIntegrationTest {
                 return requireNotNull(store.dao.project(project.id))
             }
             val first=process();assertEquals(first.error,"处理完成",first.status);assertTrue(first.revision>0)
+            // The project list arrives through a Room Flow; wait for it rather than racing the first frame.
+            compose.waitUntil(timeoutMillis=15_000) { compose.onAllNodesWithText(project.name).fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText(project.name).performClick()
             compose.onNodeWithText("展开图").performScrollTo().performClick()
-            compose.onNodeWithContentDescription("展开图：透明区域尚未拍摄").performTouchInput { click(center) }
+            compose.onNodeWithContentDescription("展开图：透明区域尚未拍摄").performScrollTo().performTouchInput { click(center) }
             compose.onNodeWithText("球面区域").assertExists()
             compose.onNodeWithText("确定").performClick()
             compose.onNodeWithText("覆盖 Mask").performScrollTo().performClick()
-            compose.onNodeWithText("JPEG",substring=false).performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("导出图片").performScrollTo().performClick()
+            compose.onNodeWithText("JPEG",substring=false).assertIsDisplayed()
+            compose.onNodeWithText("覆盖不完整：不写入完整球面元数据，仅记录实际覆盖率。").assertExists()
+            compose.onNodeWithText("取消").performClick()
             fun result(p: Project) = File(store.directory(project.id),"history/revision-${p.revision}/panorama.png")
             fun digest(file: File)=MessageDigest.getInstance("SHA-256").digest(file.readBytes()).toList()
             val hash=digest(result(first))

@@ -1,0 +1,20 @@
+# Raw logcat metrics, API 35 x86_64 emulator, 2026-10-22
+## run 1 (07:45, table in testing.md)
+ERP_RESULT frames=4 selected=4 jpegBytes=85621
+LOCALIZE q1.jpg ok=1.0 yaw=-0.0019734392417718794 pitch=0.011921797334406124 roll=0.0020039882142447478 inliers=1640.0 key=0.0 residual=4.2812970146258145E-4 ms=796
+OVERLAY q1 error=10.768287699223903 coverage=0.9889191729323308
+LOCALIZE q2.jpg ok=1.0 yaw=14.442726847038369 pitch=0.9472601943277348 roll=-0.20098827753897933 inliers=293.0 key=1.0 residual=0.018152120662138675 ms=324
+LOCALIZE q3.jpg ok=1.0 yaw=31.695698665621357 pitch=-1.2790658045776115 roll=0.7023254467187825 inliers=450.0 key=1.0 residual=0.020666519202481474 ms=774
+OVERLAY q3 error=16.05313705211895 coverage=0.5816165413533835
+LOCALIZE noise.jpg ok=0.0 yaw=0.0 pitch=0.0 roll=0.0 inliers=0.0 key=-1.0 residual=0.0 ms=346
+REAL_BOAT_RESULT coverage=4.533997021908318 elapsedMs=5270 pngBytes=117728 nativeHeapBytes=11122464
+PERF photos boat1-3 (OpenCV testdata) | inputBytes=2103211 coverage=5.812% | {"frames":3,"analysisMs":1850,"stitchMs":9757,"totalMs":11806,"peakRssBytes":349294592,"peakRssResetAtJobStart":true,"nativeHeapBytes":11268400,"panoramaBytes":146709,"stagesMs":{"特征提取":271,"双向匹配与 RANSAC":1590,"相机参数估计":2,"相机全局优化":573,"球面预投影":297,"曝光补偿":60,"接缝搜索":1808,"球面投影与多频带融合":4315,"输出融合结果":758,"保存图片和覆盖 Mask":54,"完成":29}}
+PERF video 320x240 3s H.264 | inputBytes=209309 coverage=12.875% | {"frames":6,"analysisMs":3022,"stitchMs":27683,"totalMs":30799,"peakRssBytes":342351872,"peakRssResetAtJobStart":true,"nativeHeapBytes":11281536,"panoramaBytes":471136,"stagesMs":{"特征提取":223,"双向匹配与 RANSAC":5713,"相机参数估计":1,"相机全局优化":2228,"球面预投影":440,"曝光补偿":259,"接缝搜索":9999,"球面投影与多频带融合":8030,"输出融合结果":715,"保存图片和覆盖 Mask":41,"完成":34}}
+PERF video 1280x720 6s H.264 | inputBytes=2235261 coverage=10.475% | {"frames":12,"analysisMs":11809,"stitchMs":117573,"totalMs":129497,"peakRssBytes":401580032,"peakRssResetAtJobStart":true,"nativeHeapBytes":11299840,"panoramaBytes":352978,"stagesMs":{"特征提取":1294,"双向匹配与 RANSAC":40576,"相机参数估计":2,"相机全局优化":25457,"球面预投影":905,"曝光补偿":596,"接缝搜索":31833,"球面投影与多频带融合":16072,"输出融合结果":728,"保存图片和覆盖 Mask":64,"完成":46}}
+VIDEO_PIPELINE_RESULT decodedFrames=6 coverage=12.875299118788815 videoBytes=209309
+## run 2 (final 22/22 run)
+LOCALIZE q3.jpg ok=1.0 yaw=31.695698665621357 pitch=-1.2790658045776115 roll=0.7023254467187825 inliers=450.0 key=1.0 residual=0.020666519202481474 ms=592
+PERF photos boat1-3 (OpenCV testdata) | inputBytes=2103211 coverage=5.812% | {"frames":3,"analysisMs":1846,"stitchMs":10169,"totalMs":12164,"peakRssBytes":346603520,"peakRssResetAtJobStart":true,"nativeHeapBytes":11279360,"panoramaBytes":146709,"stagesMs":{"特征提取":256,"双向匹配与 RANSAC":1752,"相机参数估计":2,"相机全局优化":587,"球面预投影":275,"曝光补偿":68,"接缝搜索":1989,"球面投影与多频带融合":4398,"输出融合结果":750,"保存图片和覆盖 Mask":49,"完成":43}}
+PERF video 320x240 3s H.264 | inputBytes=209309 coverage=12.875% | {"frames":6,"analysisMs":3160,"stitchMs":28010,"totalMs":31282,"peakRssBytes":339542016,"peakRssResetAtJobStart":true,"nativeHeapBytes":11319632,"panoramaBytes":471136,"stagesMs":{"特征提取":244,"双向匹配与 RANSAC":5830,"相机参数估计":3,"相机全局优化":2362,"球面预投影":488,"曝光补偿":182,"接缝搜索":9863,"球面投影与多频带融合":8294,"输出融合结果":652,"保存图片和覆盖 Mask":67,"完成":24}}
+PERF video 1280x720 6s H.264 | inputBytes=2235261 coverage=10.475% | {"frames":12,"analysisMs":11673,"stitchMs":120148,"totalMs":131915,"peakRssBytes":399122432,"peakRssResetAtJobStart":true,"nativeHeapBytes":11317248,"panoramaBytes":352978,"stagesMs":{"特征提取":1337,"双向匹配与 RANSAC":39253,"相机参数估计":3,"相机全局优化":26462,"球面预投影":1054,"曝光补偿":671,"接缝搜索":33864,"球面投影与多频带融合":16682,"输出融合结果":715,"保存图片和覆盖 Mask":62,"完成":45}}
+SESSION_PIPELINE_RESULT initial=4.533997021908318 supplemented=5.811525543711278

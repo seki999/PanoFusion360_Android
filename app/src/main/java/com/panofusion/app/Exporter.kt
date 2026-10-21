@@ -13,15 +13,56 @@ import java.util.zip.ZipOutputStream
 
 object Exporter {
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
+    enum class Content { PANORAMA, COVERAGE_MASK }
+    data class Options(val jpeg: Boolean, val width: Int, val quality: Int = 95, val background: Int = Color.rgb(23,26,31),
+        val content: Content = Content.PANORAMA, val cropToCoverage: Boolean = false)
+    /** Legacy entry point: full-resolution panorama, dark grey missing area for JPEG. */
     fun image(context: Context, source: File, uri: Uri, jpeg: Boolean) {
+        val width = BitmapFactory.Options().apply { inJustDecodeBounds = true }.also { BitmapFactory.decodeFile(source.path, it) }.outWidth
+        export(context, source.parentFile!!, uri, Options(jpeg, width), mode = "360", coverage = null)
+    }
+    /**
+     * Exports a committed revision. Output never exceeds the rendered resolution: enlarging would
+     * only interpolate the existing pixels, so larger sizes require a higher native render instead.
+     */
+    fun export(context: Context, revision: File, uri: Uri, options: Options, mode: String, coverage: Double?) {
+        val mask = options.content == Content.COVERAGE_MASK
+        require(!(mask && options.jpeg)) { "Coverage Mask 只导出为 PNG" }
+        require(options.quality in 50..100) { "JPEG 质量范围 50–100" }
+        val source = File(revision, if (mask) "coverage.png" else "panorama.png")
         val bitmap = BitmapFactory.decodeFile(source.absolutePath) ?: error("结果图片无法读取")
-        var flattened: Bitmap? = null
+        val created = mutableListOf<Bitmap>()
         try {
-            val result = if (jpeg) Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888).also {
-                flattened = it; val canvas = Canvas(it); canvas.drawColor(Color.rgb(23,26,31)); canvas.drawBitmap(bitmap,0f,0f,null)
-            } else bitmap
-            context.contentResolver.openOutputStream(uri).use { out -> requireNotNull(out); check(result.compress(if (jpeg) Bitmap.CompressFormat.JPEG else Bitmap.CompressFormat.PNG,95,out)) }
-        } finally { flattened?.recycle(); bitmap.recycle() }
+            val fullWidth = bitmap.width; val fullHeight = bitmap.height
+            require(options.width in 256..fullWidth && options.width % 2 == 0) { "导出宽度须为 256–$fullWidth 的偶数。当前结果按 ${fullWidth}×$fullHeight 渲染，更大尺寸需先在设置中提高原生渲染宽度。" }
+            val bounds = if (options.cropToCoverage) validBounds(File(revision, "coverage.png")) ?: error("没有有效覆盖区域可裁剪") else Rect(0, 0, fullWidth, fullHeight)
+            val cropped = if (bounds.width() == fullWidth && bounds.height() == fullHeight) bitmap else Bitmap.createBitmap(bitmap, bounds.left, bounds.top, bounds.width(), bounds.height()).also { created += it }
+            val factor = options.width.toDouble() / fullWidth
+            val outW = maxOf(1, Math.round(bounds.width() * factor).toInt()); val outH = maxOf(1, Math.round(bounds.height() * factor).toInt())
+            val scaled = if (outW == cropped.width && outH == cropped.height) cropped else Bitmap.createScaledBitmap(cropped, outW, outH, !mask).also { created += it }
+            val result = if (options.jpeg) Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888).also {
+                created += it; val canvas = Canvas(it); canvas.drawColor(options.background); canvas.drawBitmap(scaled, 0f, 0f, null)
+            } else scaled
+            val bytes = java.io.ByteArrayOutputStream().also { check(result.compress(if (options.jpeg) Bitmap.CompressFormat.JPEG else Bitmap.CompressFormat.PNG, options.quality, it)) }.toByteArray()
+            val fullOutW = Math.round(fullWidth * factor).toInt(); val fullOutH = Math.round(fullHeight * factor).toInt()
+            val xmp = if (mask) null else PanoMetadata.xmp(PanoMetadata.Layout(fullOutW, fullOutH, Math.round(bounds.left * factor).toInt(), Math.round(bounds.top * factor).toInt(), outW, outH),
+                mode, coverage, if (options.jpeg) "#%06X".format(options.background and 0xFFFFFF) else "transparent")
+            val output = when { xmp == null -> bytes; options.jpeg -> PanoMetadata.insertJpegXmp(bytes, xmp); else -> PanoMetadata.insertPngXmp(bytes, xmp) }
+            context.contentResolver.openOutputStream(uri).use { out -> requireNotNull(out) { "无法写入所选位置" }; out.write(output) }
+        } finally { created.forEach { it.recycle() }; bitmap.recycle() }
+    }
+    /** Bounding box of real coverage; a region spanning the 180° seam keeps the full width. */
+    fun validBounds(mask: File): Rect? {
+        val bitmap = BitmapFactory.decodeFile(mask.path) ?: return null
+        try {
+            var left = bitmap.width; var top = bitmap.height; var right = -1; var bottom = -1
+            val row = IntArray(bitmap.width)
+            for (y in 0 until bitmap.height) {
+                bitmap.getPixels(row, 0, bitmap.width, 0, y, bitmap.width, 1)
+                for (x in row.indices) if (Color.red(row[x]) > 0) { if (x < left) left = x; if (x > right) right = x; if (y < top) top = y; bottom = y }
+            }
+            return if (right < 0) null else Rect(left, top, right + 1, bottom + 1)
+        } finally { bitmap.recycle() }
     }
     suspend fun archive(store: ProjectStore, id: String, uri: Uri) {
         store.snapshot(id)

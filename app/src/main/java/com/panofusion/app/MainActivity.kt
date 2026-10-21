@@ -15,6 +15,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -46,30 +48,40 @@ fun PanoScreen(model: ProjectViewModel) {
     val importProject = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) runAction { current = Exporter.restore(store, uri) } }
     val project = projects.firstOrNull { it.id == current }
     val scroll = rememberScrollState()
+    @Composable fun modeLabel(mode: String) = stringResource(when (mode) { "360" -> R.string.mode_360; "180" -> R.string.mode_180; else -> R.string.mode_custom })
     Column(Modifier.fillMaxSize().safeDrawingPadding().then(if(project != null) Modifier.verticalScroll(scroll) else Modifier).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("PanoFusion 360", style = MaterialTheme.typography.headlineLarge)
-        Text("离线全景 · 保留每一次拍摄", style = MaterialTheme.typography.bodyMedium)
+        Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineLarge)
+        Text(stringResource(R.string.tagline), style = MaterialTheme.typography.bodyMedium)
         if (project == null) {
-            Row { TextButton(onClick = { settings = true }) { Text("设置") }; Button(onClick = { create = true }) { Text("新建全景") }; TextButton(onClick = { importProject.launch(arrayOf("application/zip", "application/octet-stream")) }) { Text("导入工程包") } }
+            Row { TextButton(onClick = { settings = true }) { Text(stringResource(R.string.settings)) }; Button(onClick = { create = true }) { Text(stringResource(R.string.new_panorama)) }; TextButton(onClick = { importProject.launch(arrayOf("application/zip", "application/octet-stream")) }) { Text(stringResource(R.string.import_project)) } }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(projects, key = { it.id }) { p -> Card(Modifier.fillMaxWidth().clickable { current = p.id }) {
-                    Column(Modifier.padding(16.dp)) { Text(p.name, style = MaterialTheme.typography.titleLarge); Text("${p.mode}° · ${p.status}"); Text(p.coverage?.let { "球面覆盖 %.2f%%".format(it) } ?: "尚未计算覆盖率") }
+                    Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        val thumbnail = remember(p.id, p.revision) { if (p.revision > 0) android.graphics.BitmapFactory.decodeFile(java.io.File(store.directory(p.id), "history/revision-${p.revision}/panorama.png").path, android.graphics.BitmapFactory.Options().apply { inSampleSize = 16 }) else null }
+                        thumbnail?.let { androidx.compose.foundation.Image(it.asImageBitmap(), null, Modifier.width(120.dp).aspectRatio(2f)) }
+                        Column {
+                            Text(p.name, style = MaterialTheme.typography.titleLarge)
+                            Text("${modeLabel(p.mode)} · ${p.status}")
+                            Text(p.coverage?.let { stringResource(R.string.coverage_format, it) } ?: stringResource(R.string.coverage_unknown))
+                            Text(stringResource(R.string.updated_format, java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(java.util.Date(p.updatedAt))), style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
                 } }
             }
         } else {
             Text(project.name, style = MaterialTheme.typography.headlineMedium)
-            Text(project.status)
+            Text("${modeLabel(project.mode)} · ${project.status}")
             project.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Row { TextButton(onClick = { current = null }) { Text("返回") }; TextButton(onClick = { name = project.name;rename = true }) { Text("改名") }; TextButton(onClick = { runAction { current = store.duplicate(project.id) } }) { Text("复制") }; TextButton(onClick = { delete = true }) { Text("删除工程") } }
-            Button(onClick = { picker.launch(arrayOf("video/*", "image/*")) }) { Text("导入视频 / 照片（新补拍批次）") }
+            Row { TextButton(onClick = { current = null }) { Text(stringResource(R.string.back)) }; TextButton(onClick = { name = project.name;rename = true }) { Text(stringResource(R.string.rename)) }; TextButton(onClick = { runAction { current = store.duplicate(project.id) } }) { Text(stringResource(R.string.duplicate)) }; TextButton(onClick = { delete = true }) { Text(stringResource(R.string.delete_project)) } }
+            Button(onClick = { picker.launch(arrayOf("video/*", "image/*")) }) { Text(stringResource(R.string.import_media)) }
             ProjectDetails(project, store, ::runAction)
         }
     }
     if (settings) SettingsDialog(store.context) { settings = false }
-    if (create) AlertDialog(onDismissRequest = { create = false }, title = { Text("新建全景工程") }, text = {
-        Column { OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("名称") }); listOf("360", "180", "自定义").forEach { m -> Row(Modifier.clickable { mode = m }) { RadioButton(selected = mode == m, onClick = { mode = m }); Text(m, Modifier.padding(top = 12.dp)) } } }
-    }, confirmButton = { TextButton(onClick = { create = false; runAction { current = store.create(name, mode).id } }) { Text("创建") } }, dismissButton = { TextButton(onClick = { create = false }) { Text("取消") } })
-    if (rename && project != null) AlertDialog(onDismissRequest = { rename = false }, title = { Text("修改工程名称") }, text = { OutlinedTextField(value = name, onValueChange = { name = it }) }, confirmButton = { TextButton(onClick = { rename = false;runAction { store.rename(project.id,name) } }) { Text("保存") } })
-    if (delete && project != null) AlertDialog(onDismissRequest = { delete = false }, title = { Text("删除此工程？") }, text = { Text("删除应用内素材副本及结果。手机原始文件保留。") }, confirmButton = { TextButton(onClick = { delete = false; current = null; runAction { store.delete(project.id) } }) { Text("删除") } }, dismissButton = { TextButton(onClick = { delete = false }) { Text("取消") } })
-    message?.let { AlertDialog(onDismissRequest = { message = null }, title = { Text("操作提示") }, text = { Text(it) }, confirmButton = { TextButton(onClick = { message = null }) { Text("确定") } }) }
+    if (create) AlertDialog(onDismissRequest = { create = false }, title = { Text(stringResource(R.string.create_title)) }, text = {
+        Column { OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text(stringResource(R.string.name)) }); listOf("360", "180", "自定义").forEach { m -> Row(Modifier.clickable { mode = m }) { RadioButton(selected = mode == m, onClick = { mode = m }); Text(modeLabel(m), Modifier.padding(top = 12.dp)) } } }
+    }, confirmButton = { TextButton(onClick = { create = false; runAction { current = store.create(name, mode).id } }) { Text(stringResource(R.string.create)) } }, dismissButton = { TextButton(onClick = { create = false }) { Text(stringResource(R.string.cancel)) } })
+    if (rename && project != null) AlertDialog(onDismissRequest = { rename = false }, title = { Text(stringResource(R.string.rename_title)) }, text = { OutlinedTextField(value = name, onValueChange = { name = it }) }, confirmButton = { TextButton(onClick = { rename = false;runAction { store.rename(project.id,name) } }) { Text(stringResource(R.string.save)) } })
+    if (delete && project != null) AlertDialog(onDismissRequest = { delete = false }, title = { Text(stringResource(R.string.delete_title)) }, text = { Text(stringResource(R.string.delete_message)) }, confirmButton = { TextButton(onClick = { delete = false; current = null; runAction { store.delete(project.id) } }) { Text(stringResource(R.string.delete)) } }, dismissButton = { TextButton(onClick = { delete = false }) { Text(stringResource(R.string.cancel)) } })
+    message?.let { AlertDialog(onDismissRequest = { message = null }, title = { Text(stringResource(R.string.message_title)) }, text = { Text(it) }, confirmButton = { TextButton(onClick = { message = null }) { Text(stringResource(R.string.ok)) } }) }
 }

@@ -12,13 +12,14 @@ class ProjectUiTest {
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
     @Test fun createProjectThroughComposeUi() {
         val name="UI工程-${System.nanoTime()}"
-        compose.onNodeWithText("新建全景").performClick()
+        fun text(id: Int) = compose.activity.getString(id)
+        compose.onNodeWithText(text(R.string.new_panorama)).performClick()
         compose.onNode(hasSetTextAction()).performTextInput(name)
-        compose.onNodeWithText("创建",useUnmergedTree=true).performClick()
+        compose.onNodeWithText(text(R.string.create),useUnmergedTree=true).performClick()
         compose.waitUntil(timeoutMillis=15000) { compose.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText(name).assertExists()
-        compose.onNodeWithText("导入视频 / 照片（新补拍批次）").assertExists()
-        compose.onNodeWithText("返回",substring=false).performClick()
+        compose.onNodeWithText(text(R.string.import_media)).assertExists()
+        compose.onNodeWithText(text(R.string.back),substring=false).performClick()
         compose.onNodeWithText(name).assertExists()
     }
 }
