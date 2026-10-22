@@ -118,7 +118,7 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
                     try { mask.eraseColor(android.graphics.Color.WHITE); File(staging,"coverage.png").outputStream().use { mask.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it) } } finally { mask.recycle() }
                 } finally { bitmap.recycle() }
                 100.0
-            } else NativePanorama.stitch(frames.map { it.path }.toTypedArray(), staging.absolutePath, settings.outputWidth, initial.mode, anchorIndex.coerceAtLeast(0), initial.referenceYaw, object: EngineCallback {
+            } else NativePanorama.stitch(frames.map { it.path }.toTypedArray(), frames.map { f -> assets.indexOfFirst { it.id == f.assetId } }.toIntArray(), staging.absolutePath, settings.outputWidth, initial.mode, anchorIndex.coerceAtLeast(0), initial.referenceYaw, object: EngineCallback {
                 override fun stage(name: String, completed: Int, total: Int) { metrics.stage(name); setProgressAsync(workDataOf("stage" to name, "done" to completed, "total" to total)) }
                 override fun cancelled() = isStopped
             })

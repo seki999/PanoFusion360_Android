@@ -29,7 +29,7 @@ object PanoMetadata {
             coverage?.let { append(" pf:CoveragePercent=\"%.4f\"".format(java.util.Locale.ROOT, it)) }
             append(" pf:MissingAreaFill=\"$missingFill\"")
         }
-        return "<?xpacket begin=\"﻿\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?><x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">" +
+        return "<?xpacket begin=\"\uFEFF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?><x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">" +
             "<rdf:Description rdf:about=\"\" xmlns:GPano=\"http://ns.google.com/photos/1.0/panorama/\" xmlns:pf=\"https://panofusion.app/ns/1.0/\"$attributes/>" +
             "</rdf:RDF></x:xmpmeta><?xpacket end=\"w\"?>"
     }

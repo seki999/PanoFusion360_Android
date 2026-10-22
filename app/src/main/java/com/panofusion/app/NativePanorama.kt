@@ -4,7 +4,10 @@ package com.panofusion.app
 object NativePanorama {
     init { System.loadLibrary("opencv_java4"); System.loadLibrary("panofusion") }
     external fun analyze(path: String, previousPath: String?): DoubleArray
-    external fun stitch(paths: Array<String>, outputDirectory: String, width: Int, mode: String, anchorIndex: Int, referenceYaw: Double, callback: EngineCallback): Double
+    /** [groups] marks frames that share a lens (same source asset); they share one focal length. */
+    external fun stitch(paths: Array<String>, groups: IntArray, outputDirectory: String, width: Int, mode: String, anchorIndex: Int, referenceYaw: Double, callback: EngineCallback): Double
+    /** Diagnostics: per camera [initial focal, yaw, pitch, adjusted focal, yaw, pitch]; then matchMs, adjustMs, iterations, rmsBefore, rmsAfter. */
+    external fun diagnoseCameras(paths: Array<String>, groups: IntArray): DoubleArray
     external fun openLocalizer(keyframes: Array<String>, revisionDirectory: String): Long
     /** [ok, yaw, pitch, roll, focal, inliers, keyframe, rotationResidual, overlayWritten] */
     external fun localize(handle: Long, query: String, overlay: String?, width: Int, height: Int): DoubleArray

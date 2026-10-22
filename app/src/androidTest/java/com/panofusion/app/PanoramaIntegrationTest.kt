@@ -40,7 +40,7 @@ class PanoramaIntegrationTest {
     }
     private fun stitch(inputs: List<File>, name: String): Pair<Double,File> {
         val output = File(root,name).apply { mkdirs() }
-        val coverage = NativePanorama.stitch(inputs.map { it.path }.toTypedArray(),output.path,2048,"360",0,0.0,callback)
+        val coverage = NativePanorama.stitch(inputs.map { it.path }.toTypedArray(),IntArray(inputs.size) { it },output.path,2048,"360",0,0.0,callback)
         return coverage to output
     }
     @Test fun partialPanoramaPreservesMissingRegionsAndIncrementalCoverage() {
@@ -72,7 +72,7 @@ class PanoramaIntegrationTest {
         val started = android.os.SystemClock.elapsedRealtime()
         val stages = mutableListOf<String>()
         val output = File(root,"real-scene").apply { mkdirs() }
-        val coverage = NativePanorama.stitch(inputs.map { it.path }.toTypedArray(),output.path,2048,"360",0,0.0,object: EngineCallback {
+        val coverage = NativePanorama.stitch(inputs.map { it.path }.toTypedArray(),IntArray(inputs.size) { it },output.path,2048,"360",0,0.0,object: EngineCallback {
             override fun stage(name: String, completed: Int, total: Int) { if (stages.lastOrNull() != name) stages += name }
             override fun cancelled() = false
         })
@@ -98,7 +98,7 @@ class PanoramaIntegrationTest {
     @Test fun cancellationDoesNotPublish() {
         val out = File(root,"cancel").apply { mkdirs() }
         try {
-            NativePanorama.stitch(arrayOf(frame(0.0).path,frame(0.3).path),out.path,2048,"360",0,0.0,object: EngineCallback {
+            NativePanorama.stitch(arrayOf(frame(0.0).path,frame(0.3).path),intArrayOf(0,1),out.path,2048,"360",0,0.0,object: EngineCallback {
                 override fun stage(name: String, completed: Int, total: Int) {}
                 override fun cancelled() = true
             });fail("Cancellation ignored")

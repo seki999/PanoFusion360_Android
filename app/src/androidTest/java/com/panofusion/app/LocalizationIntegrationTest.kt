@@ -53,7 +53,7 @@ class LocalizationIntegrationTest {
     @Test fun keyframesAndNewViewsLocalizeAgainstCommittedPanorama() {
         val boat1 = prepared("boat1.jpg"); val boat2 = prepared("boat2.jpg"); val boat3 = prepared("boat3.jpg")
         val revision = File(root, "revision").apply { mkdirs() }
-        NativePanorama.stitch(arrayOf(boat1.path, boat2.path), revision.path, 2048, "360", 0, 0.0, quiet)
+        NativePanorama.stitch(arrayOf(boat1.path, boat2.path), intArrayOf(0, 1), revision.path, 2048, "360", 0, 0.0, quiet)
         val handle = NativePanorama.openLocalizer(arrayOf(boat1.path, boat2.path), revision.path)
         try {
             fun locate(query: File): DoubleArray {
@@ -89,7 +89,7 @@ class LocalizationIntegrationTest {
     @Test fun referenceYawRotatesTheWholeSphere() {
         val boat1 = prepared("boat1.jpg"); val boat2 = prepared("boat2.jpg")
         val revision = File(root, "rotated").apply { mkdirs() }
-        NativePanorama.stitch(arrayOf(boat1.path, boat2.path), revision.path, 2048, "360", 1, 30.0, quiet)
+        NativePanorama.stitch(arrayOf(boat1.path, boat2.path), intArrayOf(0, 1), revision.path, 2048, "360", 1, 30.0, quiet)
         val (yaw2, pitch2) = cameraAxis(revision, 1)
         assertEquals("anchor camera sits at -referenceYaw", -30.0, yaw2, 0.5); assertEquals(0.0, pitch2, 0.5)
         val (yaw1, _) = cameraAxis(revision, 0)

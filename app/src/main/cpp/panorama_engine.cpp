@@ -1,4 +1,5 @@
 #include "panorama_engine.hpp"
+#include "ray_adjuster.hpp"
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/calib3d.hpp>
@@ -11,6 +12,7 @@
 #include <fstream>
 #include <numeric>
 #include <queue>
+#include <map>
 #include <stdexcept>
 
 namespace pano {
@@ -78,13 +80,19 @@ static void project(const Mat& source,const detail::CameraParams& camera,int wid
     rectangle(valid,Rect(0,0,source.cols,source.rows),Scalar(0),2);
     remap(valid,mask,mapx,mapy,INTER_NEAREST,BORDER_CONSTANT);
 }
-double stitch(const std::vector<std::string>& paths,const std::string& output,int width,const std::string& mode,int anchorIndex,double referenceYaw,Progress progress) {
+struct Estimated { std::vector<Mat> images; std::vector<detail::CameraParams> initial, cameras; double matchMs=0, adjustMs=0; AdjustResult adjust; };
+// An evenly spread sample of each pair's RANSAC inliers constrains the rotation model as well as
+// all of them, and keeps the bundle adjustment bounded on long sequences.
+static constexpr int kAdjustInliersPerPair=60;
+/** Features, verified pairwise matches, connectivity, rotation-camera estimate and bundle adjustment. */
+static Estimated estimateCameras(const std::vector<std::string>& paths,const std::vector<int>& groups,Progress progress) {
     if(paths.size()<2)throw std::runtime_error("E_MATCH: 普通视频/照片至少需要两张重叠关键帧");
     if(paths.size()>24)throw std::runtime_error("E_MEMORY_BUDGET: 首版每次最多 24 张关键帧，请禁用重复帧或缩短视频");
-    if(width!=2048 && width!=4096)throw std::runtime_error("E_SIZE: 当前原生渲染支持 2K/4K");
     setRNGSeed(0);
     int n=int(paths.size());
-    std::vector<Mat> images(n);std::vector<detail::ImageFeatures> features(n);
+    if(groups.size()!=paths.size())throw std::runtime_error("E_ARGUMENT: 帧分组数量不一致");
+    Estimated out; out.images.resize(n);
+    std::vector<Mat>& images=out.images; std::vector<detail::ImageFeatures> features(n);
     auto orb=ORB::create(4000);
     for(int i=0;i<n;i++) {
         progress("特征提取",i,n); images[i]=read(paths[i]);
@@ -93,6 +101,7 @@ double stitch(const std::vector<std::string>& paths,const std::string& output,in
     }
     std::vector<detail::MatchesInfo> pairwise(n*n);
     std::vector<std::vector<int>> graph(n);
+    int64 matchStart=getTickCount();
     int done=0,total=n*(n-1)/2;
     for(int i=0;i<n;i++) for(int j=i+1;j<n;j++) {
         progress("双向匹配与 RANSAC",done++,total);
@@ -108,14 +117,58 @@ double stitch(const std::vector<std::string>& paths,const std::string& output,in
     std::vector<bool> seen(n);std::queue<int> queue;queue.push(0);seen[0]=true;
     while(!queue.empty()){int i=queue.front();queue.pop();for(int j:graph[i])if(!seen[j]){seen[j]=true;queue.push(j);}}
     if(std::count(seen.begin(),seen.end(),true)!=n)throw std::runtime_error("E_DISCONNECTED: 无法自动匹配当前画面。请先拍摄一部分已完成区域，再缓慢转向缺失区域。可禁用问题素材后重试。");
+    out.matchMs=(getTickCount()-matchStart)*1000.0/getTickFrequency();
     progress("相机参数估计",0,1);
-    std::vector<detail::CameraParams> cameras;
+    std::vector<detail::CameraParams>& cameras=out.cameras;
     detail::HomographyBasedEstimator estimator;
     if(!estimator(features,pairwise,cameras))throw std::runtime_error("E_CAMERA: 焦距或旋转估计失败");
     for(auto& c:cameras)c.R.convertTo(c.R,CV_32F);
-    detail::BundleAdjusterRay adjuster;adjuster.setConfThresh(1.0);
+    out.initial=cameras;
+    for(auto& c:out.initial)c.R=c.R.clone();
+    // Intrinsics groups (one per source asset) share a focal length: every frame of a video has the same lens.
+    std::vector<int> group(n); std::map<int,int> ids;
+    for(int i=0;i<n;i++){auto it=ids.emplace(groups[i],int(ids.size())).first;group[i]=it->second;}
+    std::vector<double> focals(ids.size());
+    for(size_t g=0;g<focals.size();g++){std::vector<double> f;for(int i=0;i<n;i++)if(group[i]==int(g))f.push_back(cameras[i].focal);
+        std::nth_element(f.begin(),f.begin()+f.size()/2,f.end());focals[g]=f[f.size()/2];}
+    std::vector<Matx33d> rotations(n); std::vector<Point2d> centers(n);
+    for(int i=0;i<n;i++){Mat R;cameras[i].R.convertTo(R,CV_64F);rotations[i]=Matx33d(R);centers[i]=Point2d(images[i].cols/2.0,images[i].rows/2.0);}
+    std::vector<RayEdge> edges;
+    for(int i=0;i<n;i++) for(int j=i+1;j<n;j++) {
+        const auto& m=pairwise[i*n+j];
+        if(m.confidence<=1.0)continue;
+        std::vector<int> inliers; for(size_t k=0;k<m.inliers_mask.size();k++)if(m.inliers_mask[k])inliers.push_back(int(k));
+        RayEdge edge; edge.i=i; edge.j=j;
+        int take=std::min<int>(kAdjustInliersPerPair,int(inliers.size()));
+        for(int k=0;k<take;k++){const DMatch& d=m.matches[inliers[size_t(k)*inliers.size()/take]];
+            edge.a.push_back(features[i].keypoints[d.queryIdx].pt);edge.b.push_back(features[j].keypoints[d.trainIdx].pt);}
+        edges.push_back(std::move(edge));
+    }
     progress("相机全局优化",0,1);
-    if(!adjuster(features,pairwise,cameras))throw std::runtime_error("E_OPTIMIZE: 全局优化失败，可能存在视差，请从原位置重新拍摄");
+    int64 adjustStart=getTickCount();
+    out.adjust=adjustRays(edges,group,centers,focals,rotations);
+    if(!out.adjust.ok)throw std::runtime_error("E_OPTIMIZE: 匹配几何不一致，可能存在视差或重复纹理，请从原位置重新拍摄或禁用问题素材");
+    for(int i=0;i<n;i++){cameras[i].focal=focals[group[i]];Mat(rotations[i]).convertTo(cameras[i].R,CV_32F);}
+    out.adjustMs=(getTickCount()-adjustStart)*1000.0/getTickFrequency();
+    return out;
+}
+std::vector<double> diagnoseCameras(const std::vector<std::string>& paths,const std::vector<int>& groups) {
+    auto e=estimateCameras(paths,groups,[](const std::string&,int,int){});
+    std::vector<double> out;
+    auto axis=[&](const detail::CameraParams& c,const Mat& anchor){Mat R=anchor*c.R;R.convertTo(R,CV_64F);
+        double x=R.at<double>(0,2),y=R.at<double>(1,2),z=R.at<double>(2,2);
+        out.push_back(c.focal);out.push_back(atan2(x,z)*180/CV_PI);out.push_back(-asin(std::max(-1.0,std::min(1.0,y)))*180/CV_PI);};
+    Mat a0=e.initial[0].R.t(),a1=e.cameras[0].R.t();
+    for(size_t i=0;i<e.cameras.size();i++){axis(e.initial[i],a0);axis(e.cameras[i],a1);}
+    out.push_back(e.matchMs);out.push_back(e.adjustMs);out.push_back(e.adjust.iterations);out.push_back(e.adjust.rmsBefore);out.push_back(e.adjust.rmsAfter);out.push_back(e.adjust.edges);
+    return out;
+}
+double stitch(const std::vector<std::string>& paths,const std::vector<int>& groups,const std::string& output,int width,const std::string& mode,int anchorIndex,double referenceYaw,Progress progress) {
+    if(width!=2048 && width!=4096)throw std::runtime_error("E_SIZE: 当前原生渲染支持 2K/4K");
+    auto estimated=estimateCameras(paths,groups,progress);
+    int n=int(paths.size());
+    std::vector<Mat>& images=estimated.images;
+    std::vector<detail::CameraParams>& cameras=estimated.cameras;
     // The persisted anchor frame keeps the project's reference stable across sessions;
     // the user-selected reference yaw then rotates the whole sphere about the vertical axis.
     if(anchorIndex<0||anchorIndex>=n)anchorIndex=0;
