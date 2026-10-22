@@ -91,9 +91,15 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
             val activeIds = assets.map { it.id }.toSet()
             val allFrames = dao.frames(projectId)
             require(assets.all { asset -> allFrames.any { it.assetId == asset.id && it.selected } }) { "E_ASSET_QUALITY：至少一项素材没有可用关键帧，请检查淘汰原因或禁用该批次" }
-            val frames = allFrames.filter { it.assetId in activeIds && it.selected && it.enabled }
+            var frames = allFrames.filter { it.assetId in activeIds && it.selected && it.enabled }
+            if (!erp && frames.size > KeyframeBudget.LIMIT) {
+                // Long, steady captures yield more distinct frames than the engine budget. Keep an
+                // even spread in time per asset and record why the others were left out.
+                val kept = KeyframeBudget.thin(frames, KeyframeBudget.LIMIT) { it.assetId }.map { it.id }.toSet()
+                frames.filter { it.id !in kept }.forEach { dao.addFrame(it.copy(selected = false, reason = "自动精简（超过 ${KeyframeBudget.LIMIT} 张上限）")) }
+                frames = frames.filter { it.id in kept }
+            }
             require(frames.size >= if (erp) 1 else 2) { "E_FRAMES：清晰且非重复的关键帧不足。请补充有纹理且互相重叠的画面。" }
-            require(erp || frames.size <= 24) { "当前选中 ${frames.size} 张帧，首版最多融合 24 张，请在关键帧列表禁用重复帧" }
             staging.mkdirs()
             val anchorKey = initial.anchorFrame
             val anchorIndex = frames.indexOfFirst { frameKey(it.path) == anchorKey }
@@ -192,5 +198,26 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
             val request = OneTimeWorkRequestBuilder<PanoramaWorker>().setInputData(workDataOf("project" to projectId)).addTag(projectId).build()
             WorkManager.getInstance(context).enqueueUniqueWork("panorama-$projectId", ExistingWorkPolicy.REPLACE, request)
         }
+    }
+}
+
+/** Keeps at most [limit] frames: every asset keeps at least one, the rest is shared by frame count and spread evenly in time. */
+object KeyframeBudget {
+    const val LIMIT = 24
+    fun <T> thin(frames: List<T>, limit: Int, group: (T) -> String): List<T> {
+        if (frames.size <= limit) return frames
+        val groups = frames.groupBy(group)
+        require(groups.size <= limit) { "E_FRAMES：素材数量超过单次融合上限 $limit，请停用部分批次" }
+        val quota = groups.mapValues { (_, list) -> maxOf(1, list.size * limit / frames.size) }.toMutableMap()
+        while (quota.values.sum() > limit) { val k = quota.filterValues { it > 1 }.maxBy { it.value }.key; quota[k] = quota.getValue(k) - 1 }
+        while (quota.values.sum() < limit) { val k = groups.keys.filter { quota.getValue(it) < groups.getValue(it).size }.maxBy { groups.getValue(it).size.toDouble() / quota.getValue(it) }; quota[k] = quota.getValue(k) + 1 }
+        val kept = groups.flatMap { (key, list) -> evenly(list, quota.getValue(key)) }.toSet()
+        return frames.filter { it in kept }
+    }
+    /** [count] items evenly spaced over [items], always including the first and last. */
+    fun <T> evenly(items: List<T>, count: Int): List<T> = when {
+        count >= items.size -> items
+        count == 1 -> listOf(items[items.size / 2])
+        else -> (0 until count).map { items[Math.round(it * (items.size - 1).toDouble() / (count - 1)).toInt()] }
     }
 }

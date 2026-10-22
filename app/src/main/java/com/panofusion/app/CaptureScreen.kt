@@ -31,7 +31,7 @@ import java.util.UUID
 /** Inputs for relocalising the camera against the last committed stitched revision. */
 data class CaptureContext(val projectDirectory: File, val revision: Int, val half: Boolean, val target: Pair<Double, Double>?)
 
-@OptIn(ExperimentalCoroutinesApi::class)
+@OptIn(ExperimentalCoroutinesApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun CaptureScreen(captureContext: CaptureContext?, onClose: () -> Unit, onAccept: (List<File>) -> Unit) {
     val context = LocalContext.current
@@ -106,7 +106,7 @@ fun CaptureScreen(captureContext: CaptureContext?, onClose: () -> Unit, onAccept
             }
         } finally { withContext(NonCancellable + worker) { localizer.close() } }
     }
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row { TextButton(onClick = onClose) { Text("返回工程") }; Text("拍摄 / 补拍", style = MaterialTheme.typography.titleLarge) }
         Text(localizerMessage, style = MaterialTheme.typography.bodyMedium)
         val current = pose
@@ -142,7 +142,7 @@ fun CaptureScreen(captureContext: CaptureContext?, onClose: () -> Unit, onAccept
         }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Text("录制 ${elapsed/1_000_000_000}s · 本次已拍 ${captured.size} 项 · 围绕固定位置缓慢旋转，保持相邻画面重叠。")
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Button(enabled = permission && recording == null && photo != null, onClick = {
                 if (context.cacheDir.usableSpace < 64L*1024*1024) { error = "存储空间不足，请至少保留 64 MB"; return@Button }
                 val file = File(context.cacheDir,"capture-${UUID.randomUUID()}.jpg")
@@ -167,7 +167,7 @@ fun CaptureScreen(captureContext: CaptureContext?, onClose: () -> Unit, onAccept
             if (camera?.cameraInfo?.hasFlashUnit() == true) TextButton(onClick = { torch = !torch;camera?.cameraControl?.enableTorch(torch) }) { Text("补光") }
             TextButton(onClick = { showOverlay = !showOverlay }) { Text(if (showOverlay) "隐藏叠加" else "显示叠加") }
         }
-        if (captured.isNotEmpty()) Row {
+        if (captured.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Button(enabled = recording == null, onClick = { onAccept(captured.toList()); captured.clear() }) { Text("完成拍摄（${captured.size} 项作为新批次）") }
             TextButton(enabled = recording == null, onClick = { captured.forEach { it.delete() }; captured.clear() }) { Text("全部丢弃") }
         }

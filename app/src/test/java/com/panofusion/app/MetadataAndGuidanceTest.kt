@@ -74,3 +74,21 @@ class MetadataAndGuidanceTest {
         assertEquals("保持当前方向", Guidance.instruction(0.0, 0.0, 5.0, -5.0))
     }
 }
+
+class KeyframeBudgetTest {
+    @Test fun longVideoIsThinnedEvenlyAndEveryAssetKeepsAFrame() {
+        val frames = (0 until 95).map { "video" to it } + listOf("photo" to 0)
+        val kept = KeyframeBudget.thin(frames, 24) { it.first }
+        assertEquals(24, kept.size)
+        assertTrue(kept.contains("photo" to 0))
+        val video = kept.filter { it.first == "video" }.map { it.second }
+        assertEquals(0, video.first()); assertEquals(94, video.last())
+        assertEquals(video.sorted(), video)
+        val gaps = video.zipWithNext { a, b -> b - a }
+        assertTrue("even spacing", gaps.max() - gaps.min() <= 1)
+    }
+    @Test fun withinBudgetIsUnchanged() {
+        val frames = (0 until 10).map { "a" to it }
+        assertEquals(frames, KeyframeBudget.thin(frames, 24) { it.first })
+    }
+}

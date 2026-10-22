@@ -66,7 +66,7 @@ fun ProjectDetails(project: Project, store: ProjectStore, runAction: (suspend ()
     var review by remember(project.id) { mutableStateOf<Review?>(null) }
     var deleteSession by remember { mutableStateOf<Session?>(null) }
     var exporting by remember { mutableStateOf(false) }
-    if (capture) androidx.compose.ui.window.Dialog(onDismissRequest = { capture = false }, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+    if (capture) androidx.compose.ui.window.Dialog(onDismissRequest = { capture = false }, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         val captureContext = if (project.revision > 0) CaptureContext(store.directory(project.id), project.revision, project.mode == "180", target) else null
         Surface(Modifier.fillMaxSize()) { CaptureScreen(captureContext, onClose = { capture = false }, onAccept = { files ->
             capture = false

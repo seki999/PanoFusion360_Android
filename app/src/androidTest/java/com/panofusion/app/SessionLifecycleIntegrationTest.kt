@@ -79,6 +79,24 @@ class SessionLifecycleIntegrationTest {
         } finally { store.delete(project.id); root.deleteRecursively() }
     }
 
+    @Test fun longVideoIsThinnedToTheFrameBudgetInsteadOfFailing() = runBlocking {
+        val root = File(app.cacheDir, "long-${System.nanoTime()}").apply { mkdirs() }
+        val project = app.store.create("长视频精简", "360")
+        try {
+            // 15 s steady pan: ~30 distinct candidates at the default 0.5 s sampling, above the 24-frame budget.
+            val video = File(root, "long.mp4")
+            TestMedia.encode(video, 320, 240, 60, 4, TestMedia.perspective(320, 240, 250.0, 0.05))
+            app.store.import(project.id, listOf(Uri.fromFile(video)))
+            val done = TestMedia.process(app, project.id, 900_000)
+            assertEquals(done.error, "处理完成", done.status)
+            val frames = app.store.dao.frames(project.id)
+            val thinned = frames.count { it.reason.startsWith("自动精简") }
+            println("THINNING candidates=${frames.size} thinned=$thinned kept=${frames.count { it.selected }} coverage=${done.coverage}")
+            assertTrue("test must exceed the budget", thinned > 0)
+            assertEquals(KeyframeBudget.LIMIT, frames.count { it.selected && it.enabled })
+        } finally { app.store.delete(project.id); root.deleteRecursively() }
+    }
+
     @Test fun referenceYawRotatesErpOutputExactly() {
         val w = 64; val h = 32
         val pixels = IntArray(w * h) { android.graphics.Color.rgb(it % w * 4, it / w * 8, 0) }
