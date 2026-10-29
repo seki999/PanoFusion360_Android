@@ -1,5 +1,7 @@
 # 测试与证据
 
+2026-10-29 的 0.1.1 拍摄操作栏、系统导航区和应用图标回归结果见 [专项记录](validation/capture-layout-2026-10-29/README.md)。以下保留此前的图像算法与工程流程验证记录。
+
 所有设备测试都运行在 **API 35 x86_64 模拟器**（AVD `panofusion_validation`）上，不是真机。数值来自实际运行的日志（`.deps/final-p8*.log`、logcat），不是估算值。
 
 ```powershell

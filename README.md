@@ -2,6 +2,8 @@
 
 离线 Android 全景应用，包名 `com.panofusion.app`。源码已实现 Phase 1–8 的功能，验收状态见 [进度](docs/progress.md)。Phase 6/8 还缺真机验收，未通过测试的功能不视为交付完成。
 
+当前调试版为 **0.1.1（versionCode 2）**：拍摄页改为主窗口中的独立全屏界面，底部操作栏独立保留空间，避免三键导航栏遮挡；新增全景环绕镜头自适应图标和 Android 13 单色主题图标。验证记录见 [拍摄布局回归测试](docs/validation/capture-layout-2026-10-29/README.md)。
+
 ## 构建
 
 JDK 17、Gradle 8.9、AGP 8.7.3、Kotlin/Compose compiler 2.0.21、Compose BOM 2024.12.01、Room 2.6.1、Hilt 2.52、CameraX 1.4.1、WorkManager 2.10.0、OpenCV 4.12.0、NDK 28.2.13676358、CMake 3.22.1。minSdk 26，compile/targetSdk 35，arm64-v8a / x86_64。

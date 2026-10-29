@@ -59,24 +59,27 @@ fun ExportDialog(source: File, project: Project, onDismiss: () -> Unit, onExport
 }
 
 @Composable
-fun ProjectDetails(project: Project, store: ProjectStore, runAction: (suspend () -> Unit) -> Unit) {
+fun ProjectDetails(
+    project: Project,
+    store: ProjectStore,
+    runAction: (suspend () -> Unit) -> Unit,
+    onCaptureRequested: (CaptureContext?, (List<File>) -> Unit) -> Unit,
+) {
     val context = LocalContext.current
-    var capture by remember { mutableStateOf(false) }
     var target by remember(project.id) { mutableStateOf<Pair<Double, Double>?>(null) }
     var review by remember(project.id) { mutableStateOf<Review?>(null) }
     var deleteSession by remember { mutableStateOf<Session?>(null) }
     var exporting by remember { mutableStateOf(false) }
-    if (capture) androidx.compose.ui.window.Dialog(onDismissRequest = { capture = false }, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    fun openCapture() {
         val captureContext = if (project.revision > 0) CaptureContext(store.directory(project.id), project.revision, project.mode == "180", target) else null
-        Surface(Modifier.fillMaxSize()) { CaptureScreen(captureContext, onClose = { capture = false }, onAccept = { files ->
-            capture = false
+        onCaptureRequested(captureContext) { files ->
             val previous = Review("", project.revision, project.coverage)
             runAction {
                 try { review = previous.copy(sessionId = store.import(project.id, files.map { android.net.Uri.fromFile(it) })) }
                 finally { files.forEach { it.delete() } }
                 PanoramaWorker.enqueue(context, project.id)
             }
-        }) }
+        }
     }
     // Processing runs as a foreground worker; on Android 13+ its progress/cancel notification needs consent.
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -177,7 +180,7 @@ fun ProjectDetails(project: Project, store: ProjectStore, runAction: (suspend ()
         if (yaw.toDouble() != project.referenceYaw) TextButton(enabled = job == null || job.state.isFinished, onClick = { runAction { store.setReferenceYaw(project.id, yaw.toDouble()); PanoramaWorker.enqueue(context, project.id) } }) { Text("应用参考方向并重新生成") }
     }
     target?.let { (y, p) -> Row { Text("补拍目标：水平 %.0f° 垂直 %.0f°".format(y, p), Modifier.padding(top = 12.dp)); TextButton(onClick = { target = null }) { Text("清除") } } }
-    TextButton(onClick = { capture = true }) { Text(if (project.revision > 0) "补拍（视觉定位引导）" else "打开摄像头拍摄") }
+    TextButton(onClick = { openCapture() }) { Text(if (project.revision > 0) "补拍（视觉定位引导）" else "打开摄像头拍摄") }
     TextButton(enabled = job == null || job.state.isFinished,onClick = { runAction { store.dao.resetAnalysis(project.id); PanoramaWorker.enqueue(context,project.id) } }) { Text("按当前设置重新分析（重置帧选择）") }
     Text("素材批次 ${sessions.size} · 关键帧 ${frames.count { it.selected && it.enabled }}/${frames.size}")
     LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp, max = 350.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {

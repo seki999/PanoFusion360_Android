@@ -3,6 +3,7 @@ package com.panofusion.app
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.rememberScrollState
@@ -16,15 +17,19 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private data class CaptureRequest(val context: CaptureContext?, val accept: (List<java.io.File>) -> Unit)
+
 @dagger.hilt.android.AndroidEntryPoint
 class MainActivity: ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         val model = androidx.lifecycle.ViewModelProvider(this)[ProjectViewModel::class.java]
         setContent { MaterialTheme(colorScheme = if(androidx.compose.foundation.isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) { Surface(Modifier.fillMaxSize()) { PanoScreen(model) } } }
     }
@@ -41,6 +46,7 @@ fun PanoScreen(model: ProjectViewModel) {
     var name by remember { mutableStateOf("") }
     var mode by remember { mutableStateOf("360") }
     var message by remember { mutableStateOf<String?>(null) }
+    var captureRequest by remember { mutableStateOf<CaptureRequest?>(null) }
     val scope = rememberCoroutineScope()
     fun runAction(action: suspend () -> Unit) { model.execute(action) }
     LaunchedEffect(model) { model.errors.collect { message = it } }
@@ -49,7 +55,10 @@ fun PanoScreen(model: ProjectViewModel) {
     val project = projects.firstOrNull { it.id == current }
     val scroll = rememberScrollState()
     @Composable fun modeLabel(mode: String) = stringResource(when (mode) { "360" -> R.string.mode_360; "180" -> R.string.mode_180; else -> R.string.mode_custom })
-    Column(Modifier.fillMaxSize().safeDrawingPadding().then(if(project != null) Modifier.verticalScroll(scroll) else Modifier).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Box(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().safeDrawingPadding().then(if(project != null) Modifier.verticalScroll(scroll) else Modifier)
+        .then(if(captureRequest != null) Modifier.clearAndSetSemantics {} else Modifier)
+        .padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineLarge)
         Text(stringResource(R.string.tagline), style = MaterialTheme.typography.bodyMedium)
         if (project == null) {
@@ -74,7 +83,9 @@ fun PanoScreen(model: ProjectViewModel) {
             project.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Row { TextButton(onClick = { current = null }) { Text(stringResource(R.string.back)) }; TextButton(onClick = { name = project.name;rename = true }) { Text(stringResource(R.string.rename)) }; TextButton(onClick = { runAction { current = store.duplicate(project.id) } }) { Text(stringResource(R.string.duplicate)) }; TextButton(onClick = { delete = true }) { Text(stringResource(R.string.delete_project)) } }
             Button(onClick = { picker.launch(arrayOf("video/*", "image/*")) }) { Text(stringResource(R.string.import_media)) }
-            ProjectDetails(project, store, ::runAction)
+            ProjectDetails(project, store, ::runAction) { context, accept ->
+                captureRequest = CaptureRequest(context, accept)
+            }
         }
     }
     if (settings) SettingsDialog(store.context) { settings = false }
@@ -84,4 +95,14 @@ fun PanoScreen(model: ProjectViewModel) {
     if (rename && project != null) AlertDialog(onDismissRequest = { rename = false }, title = { Text(stringResource(R.string.rename_title)) }, text = { OutlinedTextField(value = name, onValueChange = { name = it }) }, confirmButton = { TextButton(onClick = { rename = false;runAction { store.rename(project.id,name) } }) { Text(stringResource(R.string.save)) } })
     if (delete && project != null) AlertDialog(onDismissRequest = { delete = false }, title = { Text(stringResource(R.string.delete_title)) }, text = { Text(stringResource(R.string.delete_message)) }, confirmButton = { TextButton(onClick = { delete = false; current = null; runAction { store.delete(project.id) } }) { Text(stringResource(R.string.delete)) } }, dismissButton = { TextButton(onClick = { delete = false }) { Text(stringResource(R.string.cancel)) } })
     message?.let { AlertDialog(onDismissRequest = { message = null }, title = { Text(stringResource(R.string.message_title)) }, text = { Text(it) }, confirmButton = { TextButton(onClick = { message = null }) { Text(stringResource(R.string.ok)) } }) }
+    captureRequest?.let { request ->
+        androidx.activity.compose.BackHandler { captureRequest = null }
+        Surface(Modifier.fillMaxSize()) {
+            CaptureScreen(request.context, onClose = { captureRequest = null }, onAccept = { files ->
+                captureRequest = null
+                request.accept(files)
+            })
+        }
+    }
+    }
 }

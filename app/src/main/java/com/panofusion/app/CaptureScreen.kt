@@ -41,6 +41,9 @@ fun CaptureScreen(captureContext: CaptureContext?, onClose: () -> Unit, onAccept
     var photo by remember { mutableStateOf<ImageCapture?>(null) }
     var video by remember { mutableStateOf<VideoCapture<Recorder>?>(null) }
     var camera by remember { mutableStateOf<androidx.camera.core.Camera?>(null) }
+    var provider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    var boundUseCases by remember { mutableStateOf<List<UseCase>>(emptyList()) }
+    val active = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
     var recording by remember { mutableStateOf<Recording?>(null) }
     var elapsed by remember { mutableStateOf(0L) }
     val captured = remember { mutableStateListOf<File>() }
@@ -70,7 +73,12 @@ fun CaptureScreen(captureContext: CaptureContext?, onClose: () -> Unit, onAccept
             }
         }
         if (sensor != null) manager.registerListener(listener,sensor,SensorManager.SENSOR_DELAY_UI)
-        onDispose { manager.unregisterListener(listener); recording?.stop() }
+        onDispose {
+            active.set(false)
+            manager.unregisterListener(listener)
+            recording?.stop()
+            provider?.unbind(*boundUseCases.toTypedArray())
+        }
     }
     LaunchedEffect(captureContext, permission) {
         if (captureContext == null || !permission) return@LaunchedEffect
@@ -106,18 +114,19 @@ fun CaptureScreen(captureContext: CaptureContext?, onClose: () -> Unit, onAccept
             }
         } finally { withContext(NonCancellable + worker) { localizer.close() } }
     }
-    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    val current = pose
+    val target = recommended
+    CaptureScreenLayout(header = {
         Row { TextButton(onClick = onClose) { Text("返回工程") }; Text("拍摄 / 补拍", style = MaterialTheme.typography.titleLarge) }
         Text(localizerMessage, style = MaterialTheme.typography.bodyMedium)
-        val current = pose
-        val target = recommended
         Text(when {
             current != null && target != null -> "目标 水平 %.0f° 垂直 %.0f° → %s".format(target.first, target.second, Guidance.instruction(current.yaw, current.pitch, target.first, target.second))
             current != null -> "当前目标区域已覆盖"
             else -> "传感器俯仰 %.0f°（仅作辅助，未定位前不代表全景方向）".format(pitch)
         })
+    }, preview = {
         if (!permission) Button(onClick = { launcher.launch(Manifest.permission.CAMERA) }) { Text("允许使用摄像头") }
-        else Box(Modifier.fillMaxWidth().weight(1f)) {
+        else {
             AndroidView(factory = { ctx ->
                 PreviewView(ctx).also { view ->
                     // TextureView mode keeps PreviewView.bitmap available for localisation.
@@ -125,14 +134,17 @@ fun CaptureScreen(captureContext: CaptureContext?, onClose: () -> Unit, onAccept
                     previewView = view
                     val future = ProcessCameraProvider.getInstance(ctx)
                     future.addListener({
+                        if (!active.get()) return@addListener
                         try {
-                            val provider = future.get()
+                            val readyProvider = future.get()
                             val preview = Preview.Builder().build().also { it.surfaceProvider = view.surfaceProvider }
                             val capture = ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY).build()
                             val recorder = Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.HD, FallbackStrategy.lowerQualityOrHigherThan(Quality.HD))).build()
                             val vc = VideoCapture.withOutput(recorder)
-                            provider.unbindAll()
-                            camera = provider.bindToLifecycle(owner,CameraSelector.DEFAULT_BACK_CAMERA,preview,capture,vc)
+                            readyProvider.unbindAll()
+                            camera = readyProvider.bindToLifecycle(owner,CameraSelector.DEFAULT_BACK_CAMERA,preview,capture,vc)
+                            provider = readyProvider
+                            boundUseCases = listOf(preview, capture, vc)
                             photo = capture;video = vc
                         } catch (e: Exception) { error = "摄像头初始化失败：${e.message}" }
                     },executor)
@@ -140,8 +152,9 @@ fun CaptureScreen(captureContext: CaptureContext?, onClose: () -> Unit, onAccept
             }, modifier = Modifier.fillMaxSize())
             if (showOverlay && current != null) overlay?.let { Image(it, "已拍摄区域半透明叠加", Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds, alpha = 0.45f) }
         }
+    }, controls = {
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        Text("录制 ${elapsed/1_000_000_000}s · 本次已拍 ${captured.size} 项 · 围绕固定位置缓慢旋转，保持相邻画面重叠。")
+        Text("录制 ${elapsed/1_000_000_000}s · 本次已拍 ${captured.size} 项")
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Button(enabled = permission && recording == null && photo != null, onClick = {
                 if (context.cacheDir.usableSpace < 64L*1024*1024) { error = "存储空间不足，请至少保留 64 MB"; return@Button }
@@ -171,5 +184,5 @@ fun CaptureScreen(captureContext: CaptureContext?, onClose: () -> Unit, onAccept
             Button(enabled = recording == null, onClick = { onAccept(captured.toList()); captured.clear() }) { Text("完成拍摄（${captured.size} 项作为新批次）") }
             TextButton(enabled = recording == null, onClick = { captured.forEach { it.delete() }; captured.clear() }) { Text("全部丢弃") }
         }
-    }
+    })
 }
