@@ -60,6 +60,19 @@ fun CaptureScreen(captureContext: CaptureContext?, onClose: () -> Unit, onAccept
     var recommended by remember { mutableStateOf(captureContext?.target) }
     val executor = remember { ContextCompat.getMainExecutor(context) }
     val worker = remember { Dispatchers.Default.limitedParallelism(1) }
+    var confirmSave by remember { mutableStateOf(false) }
+    fun requestClose() {
+        when {
+            recording != null -> error = "请先停止录像，再完成拍摄保存素材"
+            captured.isNotEmpty() -> confirmSave = true
+            else -> onClose()
+        }
+    }
+    androidx.activity.compose.BackHandler { requestClose() }
+    if (confirmSave) AlertDialog(onDismissRequest = { confirmSave = false }, title = { Text("保存本次拍摄？") },
+        text = { Text("还有 ${captured.size} 项照片或视频尚未加入工程。保存后，即使拼接失败也可以导出原件。") },
+        confirmButton = { TextButton(onClick = { confirmSave = false; onAccept(captured.toList()); captured.clear() }) { Text("保存并返回") } },
+        dismissButton = { TextButton(onClick = { confirmSave = false }) { Text("继续拍摄") } })
     DisposableEffect(Unit) {
         val manager = context.getSystemService(SensorManager::class.java)
         val sensor = manager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
@@ -117,7 +130,7 @@ fun CaptureScreen(captureContext: CaptureContext?, onClose: () -> Unit, onAccept
     val current = pose
     val target = recommended
     CaptureScreenLayout(header = {
-        Row { TextButton(onClick = onClose) { Text("返回工程") }; Text("拍摄 / 补拍", style = MaterialTheme.typography.titleLarge) }
+        Row { TextButton(onClick = { requestClose() }) { Text("返回工程") }; Text("拍摄 / 补拍", style = MaterialTheme.typography.titleLarge) }
         Text(localizerMessage, style = MaterialTheme.typography.bodyMedium)
         Text(when {
             current != null && target != null -> "目标 水平 %.0f° 垂直 %.0f° → %s".format(target.first, target.second, Guidance.instruction(current.yaw, current.pitch, target.first, target.second))
@@ -184,5 +197,6 @@ fun CaptureScreen(captureContext: CaptureContext?, onClose: () -> Unit, onAccept
             Button(enabled = recording == null, onClick = { onAccept(captured.toList()); captured.clear() }) { Text("完成拍摄（${captured.size} 项作为新批次）") }
             TextButton(enabled = recording == null, onClick = { captured.forEach { it.delete() }; captured.clear() }) { Text("全部丢弃") }
         }
+        if (captured.isNotEmpty()) Text("完成拍摄后才加入工程；开启相册备份时同时复制原件到相册。", style = MaterialTheme.typography.labelSmall)
     })
 }

@@ -90,21 +90,72 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
             }
             val activeIds = assets.map { it.id }.toSet()
             val allFrames = dao.frames(projectId)
-            require(assets.all { asset -> allFrames.any { it.assetId == asset.id && it.selected } }) { "E_ASSET_QUALITY：至少一项素材没有可用关键帧，请检查淘汰原因或禁用该批次" }
-            var frames = allFrames.filter { it.assetId in activeIds && it.selected && it.enabled }
-            if (!erp && frames.size > KeyframeBudget.LIMIT) {
-                // Long, steady captures yield more distinct frames than the engine budget. Keep an
-                // even spread in time per asset and record why the others were left out.
-                val kept = KeyframeBudget.thin(frames, KeyframeBudget.LIMIT) { it.assetId }.map { it.id }.toSet()
-                frames.filter { it.id !in kept }.forEach { dao.addFrame(it.copy(selected = false, reason = "自动精简（超过 ${KeyframeBudget.LIMIT} 张上限）")) }
-                frames = frames.filter { it.id in kept }
-            }
+            fun eligible(frame: Frame) = frame.selected || recoverableSelection(frame.reason)
+            require(assets.all { asset -> allFrames.any { it.assetId == asset.id && eligible(it) && it.enabled } }) { "E_ASSET_QUALITY：至少一项素材没有启用的可用关键帧，请检查淘汰原因或禁用该批次" }
+            val candidates = allFrames.filter { it.assetId in activeIds && eligible(it) && it.enabled }
+            var frames = candidates
             require(frames.size >= if (erp) 1 else 2) { "E_FRAMES：清晰且非重复的关键帧不足。请补充有纹理且互相重叠的画面。" }
             staging.mkdirs()
             val anchorKey = initial.anchorFrame
-            val anchorIndex = frames.indexOfFirst { frameKey(it.path) == anchorKey }
-            val anchorMoved = !erp && anchorKey != null && anchorIndex < 0
+            var anchorIndex = frames.indexOfFirst { frameKey(it.path) == anchorKey }
+            var disconnectedCount = 0
+            var selectedByGraph = false
+            var lastStage = ""
+            val callback = object: EngineCallback {
+                override fun stage(name: String, completed: Int, total: Int) {
+                    metrics.stage(name)
+                    if (name != lastStage || completed % maxOf(1, total / 100) == 0 || completed == total) {
+                        setProgressAsync(workDataOf("stage" to name, "done" to completed, "total" to total)); lastStage = name
+                    }
+                }
+                override fun cancelled() = isStopped
+            }
+            suspend fun selectConnected(): List<Frame> {
+                var pool = if (candidates.size > ConnectedFrameSelector.CANDIDATE_LIMIT)
+                    KeyframeBudget.thin(candidates, ConnectedFrameSelector.CANDIDATE_LIMIT) { it.assetId } else candidates
+                val originalAnchor = candidates.firstOrNull { frameKey(it.path) == anchorKey }
+                if (originalAnchor != null && originalAnchor !in pool) {
+                    val replace = pool.indexOfFirst { it.assetId == originalAnchor.assetId }
+                    pool = pool.toMutableList().apply { set(replace, originalAnchor) }.sortedBy { candidates.indexOf(it) }
+                }
+                val graph = NativePanorama.frameGraph(pool.map { it.path }.toTypedArray(), callback)
+                val report = File(store.directory(projectId), "diagnostics/selection-$id.json").apply { parentFile?.mkdirs() }
+                fun report(result: ConnectedFrameSelector.Result?) {
+                    report.writeText(kotlinx.serialization.json.buildJsonObject {
+                        put("candidateCount", kotlinx.serialization.json.JsonPrimitive(candidates.size))
+                        put("pool", kotlinx.serialization.json.JsonArray(pool.map { frame -> kotlinx.serialization.json.buildJsonObject {
+                            put("frameId", kotlinx.serialization.json.JsonPrimitive(frame.id))
+                            put("assetId", kotlinx.serialization.json.JsonPrimitive(frame.assetId))
+                            put("timeUs", kotlinx.serialization.json.JsonPrimitive(frame.timeUs))
+                        } }))
+                        put("verifiedEdges", kotlinx.serialization.json.JsonArray(graph.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                        if (result != null) {
+                            put("selectedIndices", kotlinx.serialization.json.JsonArray(result.indices.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                            put("disconnectedIndices", kotlinx.serialization.json.JsonArray(result.disconnected.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                        }
+                    }.toString())
+                }
+                report(null) // Keep real failure evidence outside the temporary rendering directory.
+                val selection = ConnectedFrameSelector.select(pool.map { it.assetId }, graph, KeyframeBudget.LIMIT,
+                    pool.indexOfFirst { frameKey(it.path) == anchorKey })
+                report(selection)
+                val chosen = selection.indices.map { pool[it] }
+                val kept = chosen.map { it.id }.toSet()
+                val disconnected = selection.disconnected.map { pool[it].id }.toSet()
+                disconnectedCount = disconnected.size
+                candidates.forEach { frame -> dao.addFrame(frame.copy(selected = frame.id in kept, reason = when {
+                    frame.id in kept -> "已选中（连接验证）"
+                    frame.id in disconnected -> "自动筛选：此帧未连接到可用全景，原件保留"
+                    else -> "自动精简（视觉重复或连接预算，原件保留）"
+                })) }
+                selectedByGraph = true
+                return chosen.map { it.copy(selected = true, reason = "已选中（连接验证）") }
+            }
             val stitchStarted = android.os.SystemClock.elapsedRealtime()
+            if (!erp && frames.size > KeyframeBudget.LIMIT) frames = selectConnected()
+            else frames = frames.map { frame ->
+                if (!frame.selected) frame.copy(selected = true, reason = "已选中（恢复保留帧）").also { dao.addFrame(it) } else frame
+            }
             val coverage = if (erp) {
                 require(initial.mode == "360") { "完整单目 ERP 视频请使用 360° 工程" }
                 val best = frames.maxBy { it.sharpness }
@@ -118,10 +169,18 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
                     try { mask.eraseColor(android.graphics.Color.WHITE); File(staging,"coverage.png").outputStream().use { mask.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it) } } finally { mask.recycle() }
                 } finally { bitmap.recycle() }
                 100.0
-            } else NativePanorama.stitch(frames.map { it.path }.toTypedArray(), frames.map { f -> assets.indexOfFirst { it.id == f.assetId } }.toIntArray(), staging.absolutePath, settings.outputWidth, initial.mode, anchorIndex.coerceAtLeast(0), initial.referenceYaw, object: EngineCallback {
-                override fun stage(name: String, completed: Int, total: Int) { metrics.stage(name); setProgressAsync(workDataOf("stage" to name, "done" to completed, "total" to total)) }
-                override fun cancelled() = isStopped
-            })
+            } else {
+                fun render(): Double {
+                    anchorIndex = frames.indexOfFirst { frameKey(it.path) == anchorKey }
+                    return NativePanorama.stitch(frames.map { it.path }.toTypedArray(), frames.map { f -> assets.indexOfFirst { it.id == f.assetId } }.toIntArray(),
+                        staging.absolutePath, settings.outputWidth, initial.mode, anchorIndex.coerceAtLeast(0), initial.referenceYaw, callback)
+                }
+                try { render() } catch (e: IllegalStateException) {
+                    if (selectedByGraph || !e.message.orEmpty().startsWith("E_DISCONNECTED")) throw e
+                    frames = selectConnected()
+                    render()
+                }
+            }
             metrics.stage(null)
             metrics.stitchMs = android.os.SystemClock.elapsedRealtime() - stitchStarted
             currentCoroutineContext().ensureActive()
@@ -133,9 +192,14 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
             val destination = File(store.directory(projectId), "history/revision-$revision")
             destination.parentFile?.mkdirs()
             check(!destination.exists() && staging.renameTo(destination)) { "E_SAVE：无法提交新版本" }
-            val committed = (dao.project(projectId) ?: error("工程已删除")).copy(revision = revision, coverage = coverage.takeIf { it >= 0 }, updatedAt = System.currentTimeMillis(), status = "处理完成",
+            val anchorMoved = !erp && anchorKey != null && anchorIndex < 0
+            val warning = listOfNotNull(
+                if (anchorMoved) "原参考锚点帧已禁用，已改用当前第一张关键帧作为参考方向" else null,
+                if (disconnectedCount > 0) "有 $disconnectedCount 张帧未匹配；仅输出已验证的部分全景，未拍摄/未匹配区域仍为空白，原件已保留" else null,
+            ).joinToString("；").takeIf { it.isNotEmpty() }
+            val committed = (dao.project(projectId) ?: error("工程已删除")).copy(revision = revision, coverage = coverage.takeIf { it >= 0 }, updatedAt = System.currentTimeMillis(), status = if(disconnectedCount > 0) "部分完成" else "处理完成",
                 anchorFrame = if (erp) null else frameKey(frames[anchorIndex.coerceAtLeast(0)].path),
-                error = if (anchorMoved) "原参考锚点帧已禁用，已改用当前第一张关键帧作为参考方向" else null)
+                error = warning)
             dao.save(committed)
             store.snapshot(projectId)
             return Result.success()
@@ -185,6 +249,7 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
     }
     private suspend fun progress(stage: String, done: Int, total: Int) = setProgress(workDataOf("stage" to stage, "done" to done, "total" to total))
     companion object {
+        fun recoverableSelection(reason: String) = reason.startsWith("自动精简") || reason.startsWith("自动筛选")
         /** Moves the content at [yaw] degrees to the ERP centre; an exact column rotation, no resampling. */
         fun rotateErpYaw(source: android.graphics.Bitmap, yaw: Double): android.graphics.Bitmap {
             val w = source.width
@@ -194,9 +259,10 @@ class PanoramaWorker(context: Context, params: WorkerParameters): CoroutineWorke
             android.graphics.Canvas(out).apply { drawBitmap(source, dx.toFloat(), 0f, null); drawBitmap(source, (dx - w).toFloat(), 0f, null) }
             return out
         }
-        fun enqueue(context: Context, projectId: String) {
+        fun enqueue(context: Context, projectId: String): java.util.UUID {
             val request = OneTimeWorkRequestBuilder<PanoramaWorker>().setInputData(workDataOf("project" to projectId)).addTag(projectId).build()
             WorkManager.getInstance(context).enqueueUniqueWork("panorama-$projectId", ExistingWorkPolicy.REPLACE, request)
+            return request.id
         }
     }
 }

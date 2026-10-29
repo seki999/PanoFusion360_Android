@@ -20,10 +20,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.work.WorkManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import java.io.File
 import kotlin.math.roundToInt
 
-data class Review(val sessionId: String, val revision: Int, val coverage: Double?)
+data class Review(val sessionId: String, val revision: Int, val coverage: Double?, val workId: java.util.UUID? = null)
 
 @Composable
 fun ExportDialog(source: File, project: Project, onDismiss: () -> Unit, onExport: (Exporter.Options) -> Unit) {
@@ -70,14 +71,21 @@ fun ProjectDetails(
     var review by remember(project.id) { mutableStateOf<Review?>(null) }
     var deleteSession by remember { mutableStateOf<Session?>(null) }
     var exporting by remember { mutableStateOf(false) }
+    var mediaNotice by remember { mutableStateOf<String?>(null) }
     fun openCapture() {
         val captureContext = if (project.revision > 0) CaptureContext(store.directory(project.id), project.revision, project.mode == "180", target) else null
         onCaptureRequested(captureContext) { files ->
             val previous = Review("", project.revision, project.coverage)
             runAction {
-                try { review = previous.copy(sessionId = store.import(project.id, files.map { android.net.Uri.fromFile(it) })) }
-                finally { files.forEach { it.delete() } }
-                PanoramaWorker.enqueue(context, project.id)
+                val sessionId = store.import(project.id, files.map { android.net.Uri.fromFile(it) })
+                // Do not delete pending originals if import fails.
+                files.forEach { it.delete() }
+                if (android.os.Build.VERSION.SDK_INT >= 29 && SettingsStore.flow(context).first().saveCapturedToGallery) {
+                    val originals = store.dao.assets(project.id).filter { it.sessionId == sessionId }
+                    val saved = originals.count { runCatching { GalleryStore.save(context, it) }.isSuccess }
+                    mediaNotice = "已加入工程；相册保存 $saved/${originals.size} 项。" + if (saved < originals.size) "未保存的原件仍在工程中，可手动导出。" else ""
+                } else mediaNotice = "原素材已保存到此工程，可在素材列表导出原件。"
+                review = previous.copy(sessionId = sessionId, workId = PanoramaWorker.enqueue(context, project.id))
             }
         }
     }
@@ -95,25 +103,25 @@ fun ProjectDetails(
     var showMask by remember { mutableStateOf(false) }
     var mapMessage by remember { mutableStateOf<String?>(null) }
     val jobs by WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow("panorama-${project.id}").collectAsState(initial = emptyList())
-    val job = jobs.firstOrNull()
+    val job = review?.workId?.let { id -> jobs.firstOrNull { it.id == id } }
+        ?: jobs.firstOrNull { !it.state.isFinished } ?: jobs.firstOrNull()
     var tapped by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     mapMessage?.let { text -> AlertDialog(onDismissRequest = { mapMessage = null },title = { Text("球面区域") },text = { Text(text) },confirmButton = { TextButton(onClick = { mapMessage = null }) { Text("确定") } },
         dismissButton = { tapped?.let { point -> TextButton(onClick = { target = point; mapMessage = null }) { Text("设为补拍目标") } } }) }
     review?.let { pendingReview ->
-        val finished = job == null || job.state.isFinished
-        if (finished && pendingReview.sessionId.isNotEmpty() && project.revision > pendingReview.revision && project.status == "处理完成") AlertDialog(onDismissRequest = {}, title = { Text("确认加入新批次") },
-            text = { Text("覆盖率 %s → %s。可保留新结果，或撤销本批次并恢复之前版本。".format(pendingReview.coverage?.let { "%.2f%%".format(it) } ?: "—", project.coverage?.let { "%.2f%%".format(it) } ?: "—")) },
+        val finished = job != null && job.id == pendingReview.workId && job.state.isFinished
+        if (finished && pendingReview.sessionId.isNotEmpty() && project.revision > pendingReview.revision && project.status in listOf("处理完成", "部分完成")) AlertDialog(onDismissRequest = {}, title = { Text("确认加入新批次") },
+            text = { Text("覆盖率 %s → %s。可保留新结果，或撤销本批次并恢复之前版本。\n%s".format(pendingReview.coverage?.let { "%.2f%%".format(it) } ?: "—", project.coverage?.let { "%.2f%%".format(it) } ?: "—", project.error.orEmpty())) },
             confirmButton = { TextButton(onClick = { review = null }) { Text("保留") } },
             dismissButton = { TextButton(onClick = { review = null; runAction {
                 if (pendingReview.revision > 0) store.restoreRevision(project.id, pendingReview.revision) else { store.dao.enableSession(pendingReview.sessionId, false); store.snapshot(project.id) }
             } }) { Text("撤销本批次") } })
-        else if (finished && pendingReview.sessionId.isNotEmpty() && project.status == "处理失败") AlertDialog(onDismissRequest = { review = null }, title = { Text("新批次未能融合") },
-            text = { Text("${project.error ?: ""}\n原结果已保留。可删除该批次，或保留素材后调整关键帧再试。") },
-            confirmButton = { TextButton(onClick = { review = null; runAction { store.deleteSession(project.id, pendingReview.sessionId) } }) { Text("删除该批次") } },
-            dismissButton = { TextButton(onClick = { review = null }) { Text("保留") } })
+        else if (finished && pendingReview.sessionId.isNotEmpty() && project.status == "处理失败") AlertDialog(onDismissRequest = { review = null }, title = { Text(if(project.revision > 0) "新批次未能融合" else "尚未生成全景") },
+            text = { Text("${project.error ?: ""}\n" + if(project.revision > 0) "原全景和原素材均已保留。可导出原件或诊断包后调整关键帧再试。" else "尚无成功的全景结果；拍摄原件仍在工程中，可导出原件或诊断包。请先保留素材，便于排查。") },
+            confirmButton = { TextButton(onClick = { review = null }) { Text("保留素材并关闭") } })
     }
     deleteSession?.let { session -> AlertDialog(onDismissRequest = { deleteSession = null }, title = { Text("删除此批次？") },
-        text = { Text("将删除该批次在应用内的素材副本和关键帧，手机原始文件保留。删除后将重新生成全景。") },
+        text = { Text("将删除该批次的工程内原件和关键帧。仅已导出、已备份到相册或从外部导入的原文件会保留。尚未备份的拍摄素材请先导出。删除后需重新生成全景。") },
         confirmButton = { TextButton(onClick = { deleteSession = null; runAction { store.deleteSession(project.id, session.id); PanoramaWorker.enqueue(context, project.id) } }) { Text("删除") } },
         dismissButton = { TextButton(onClick = { deleteSession = null }) { Text("取消") } }) }
     LaunchedEffect(project.id, project.status, job?.progress) { frames = withContext(Dispatchers.IO) { store.dao.frames(project.id) }; assets = withContext(Dispatchers.IO) { store.dao.assets(project.id) } }
@@ -132,6 +140,20 @@ fun ProjectDetails(
         if (options.jpeg) jpegExport.launch("${project.name}-$suffix.jpg") else export.launch("${project.name}-$suffix.png")
     }
     val packageExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri -> if (uri != null) runAction { Exporter.archive(store, project.id, uri) } }
+    var originalExport by remember { mutableStateOf<Asset?>(null) }
+    val saveOriginal = rememberLauncherForActivityResult(object: ActivityResultContracts.CreateDocument("application/octet-stream") {
+        override fun createIntent(context: android.content.Context, input: String): android.content.Intent =
+            super.createIntent(context, input).setType(originalExport?.mime ?: "application/octet-stream")
+    }) { uri -> val asset = originalExport; if (uri != null && asset != null) runAction {
+        context.contentResolver.openOutputStream(uri).use { output ->
+            requireNotNull(output); File(asset.path).inputStream().use { it.copyTo(output) }
+        }
+        mediaNotice = "已导出原素材：${asset.displayName}"
+    } }
+    TextButton(enabled = job == null || job.state.isFinished, onClick = { packageExport.launch("${project.name}.panofusion.zip") }) {
+        Text("导出工程 / 诊断包（含原素材）")
+    }
+    mediaNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = { requestNotifications(); PanoramaWorker.enqueue(context, project.id) }) { Text("普通视频/照片拼接") }
         TextButton(onClick = { WorkManager.getInstance(context).cancelUniqueWork("panorama-${project.id}") }) { Text("取消处理") }
@@ -162,8 +184,11 @@ fun ProjectDetails(
                 detectTapGestures { offset ->
                     val x = (offset.x/size.width*image.width).toInt().coerceIn(0,image.width-1)
                     val y = (offset.y/size.height*image.height).toInt().coerceIn(0,image.height-1)
-                    val mask = BitmapFactory.decodeFile(File(source.parentFile,"coverage.png").path)
-                    val observed = mask?.let { android.graphics.Color.red(it.getPixel(x,y))>0 } ?: false
+                    val maskFile = File(source.parentFile, "coverage.png")
+                    val mask = BitmapFactory.decodeFile(maskFile.path)
+                    val observed = mask?.let {
+                        android.graphics.Color.red(it.getPixel(x, y)) > 0
+                    } ?: false
                     mask?.recycle()
                     tapped = if (observed) null else (x.toDouble()/image.width*360-180) to (90-y.toDouble()/image.height*180)
                     mapMessage = "水平 %.1f° / 垂直 %.1f°\n%s\n%s".format(x.toDouble()/image.width*360-180,90-y.toDouble()/image.height*180,if(observed) "已融合；绿色为清晰区域，黄色为低纹理或曝光风险" else "尚未融合",if(observed) "可补拍改善质量" else "请先对准已拍区域建立视觉重叠，再转向此方向")
@@ -187,7 +212,14 @@ fun ProjectDetails(
         items(sessions, key = { it.id }) { session -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Column(Modifier.weight(1f)) {
                 Text(java.text.DateFormat.getDateTimeInstance().format(java.util.Date(session.createdAt)))
-                assets.filter { it.sessionId == session.id }.forEach { asset -> Text("${asset.displayName} · ${asset.mime}" + if(asset.width>0) " ${asset.width}×${asset.height}" else "", style = MaterialTheme.typography.labelSmall) }
+                assets.filter { it.sessionId == session.id }.forEach { asset ->
+                    Text("${asset.displayName} · ${asset.mime}" + if(asset.width>0) " ${asset.width}×${asset.height}" else "", style = MaterialTheme.typography.labelSmall)
+                    TextButton(onClick = { originalExport = asset; saveOriginal.launch(asset.displayName) }) { Text("导出原件") }
+                    if (android.os.Build.VERSION.SDK_INT >= 29) TextButton(onClick = { runAction {
+                        GalleryStore.save(context, asset)
+                        mediaNotice = "已保存到系统相册：${asset.displayName}"
+                    } }) { Text("保存到相册") }
+                }
             }
             Switch(checked = session.enabled, onCheckedChange = { enabled -> runAction {
                 store.dao.enableSession(session.id, enabled); store.snapshot(project.id)
@@ -200,7 +232,7 @@ fun ProjectDetails(
                 val thumbnail = remember(frame.path) { BitmapFactory.decodeFile(frame.path, BitmapFactory.Options().apply { inSampleSize = 8 }) }
                 thumbnail?.let { Image(it.asImageBitmap(), "关键帧", Modifier.size(64.dp)) }
                 Column(Modifier.weight(1f)) { Text("${frame.timeUs/1000} ms · ${frame.reason}"); Text("清晰度 %.1f · 特征 %d".format(frame.sharpness, frame.features), style = MaterialTheme.typography.labelSmall) }
-                if (frame.selected) Checkbox(checked = frame.enabled, onCheckedChange = { enabled -> runAction {
+                if (frame.selected || PanoramaWorker.recoverableSelection(frame.reason)) Checkbox(checked = frame.enabled, onCheckedChange = { enabled -> runAction {
                     store.dao.enableFrame(frame.id, enabled)
                     frames = store.dao.frames(project.id)
                 } })

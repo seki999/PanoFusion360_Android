@@ -4,6 +4,8 @@ package com.panofusion.app
 object NativePanorama {
     init { System.loadLibrary("opencv_java4"); System.loadLibrary("panofusion") }
     external fun analyze(path: String, previousPath: String?): DoubleArray
+    /** Symmetric N×N matrix: negative means unverified; nonnegative is normalized inlier displacement. */
+    external fun frameGraph(paths: Array<String>, callback: EngineCallback): DoubleArray
     /** [groups] marks frames that share a lens (same source asset); they share one focal length. */
     external fun stitch(paths: Array<String>, groups: IntArray, outputDirectory: String, width: Int, mode: String, anchorIndex: Int, referenceYaw: Double, callback: EngineCallback): Double
     /** Diagnostics: per camera [initial focal, yaw, pitch, adjusted focal, yaw, pitch]; then matchMs, adjustMs, iterations, rmsBefore, rmsAfter. */

@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='UTF-8' ?>
+<testsuite name="com.panofusion.app.GalleryStorageTest" tests="3" failures="0" errors="0" skipped="0" time="444.771" timestamp="2026-10-29T08:36:07" hostname="localhost">
+  <properties>
+    <property name="device" value="panofusion_validation(AVD) - 15" />
+    <property name="flavor" value="" />
+    <property name="project" value=":app" />
+  </properties>
+  <testcase name="originalCanBeSavedAndExportedBeforeAnyPanoramaExists" classname="com.panofusion.app.GalleryStorageTest" time="1.932" />
+  <testcase name="repeatedRevolutionsUseVerifiedBridgesAndKeepEveryAsset" classname="com.panofusion.app.ConnectedSelectionIntegrationTest" time="434.442" />
+  <testcase name="retryCanRecoverPreviouslyThinnedFramesWithoutReimporting" classname="com.panofusion.app.ConnectedSelectionIntegrationTest" time="6.675" />
+</testsuite>

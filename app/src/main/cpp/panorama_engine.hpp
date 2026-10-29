@@ -12,6 +12,7 @@ struct Verified { std::vector<cv::DMatch> matches; std::vector<uchar> inliers; c
 cv::Mat read(const std::string& path);
 Verified match(const std::vector<cv::KeyPoint>& a, const cv::Mat& da, cv::Size sa, const std::vector<cv::KeyPoint>& b, const cv::Mat& db, cv::Size sb);
 Analysis analyze(const std::string&, const std::string&);
+std::vector<double> frameGraph(const std::vector<std::string>& paths, Progress progress);
 /** Per camera: initial (focal, yaw, pitch) then adjusted (focal, yaw, pitch) relative to camera 0; then matchMs, adjustMs, iterations, rms before, rms after. */
 std::vector<double> diagnoseCameras(const std::vector<std::string>& paths, const std::vector<int>& groups);
 double stitch(const std::vector<std::string>& paths, const std::vector<int>& groups, const std::string& output, int width, const std::string& mode, int anchorIndex, double referenceYaw, Progress);

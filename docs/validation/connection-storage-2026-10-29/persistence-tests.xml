@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='UTF-8' ?>
+<testsuite name="com.panofusion.app.CapturePersistenceUiTest" tests="4" failures="0" errors="0" skipped="0" time="94.347" timestamp="2026-10-29T08:39:18" hostname="localhost">
+  <properties>
+    <property name="device" value="panofusion_validation(AVD) - 15" />
+    <property name="flavor" value="" />
+    <property name="project" value=":app" />
+  </properties>
+  <testcase name="completingPhotoCaptureKeepsOriginalAndGalleryCopyWhenStitchingFails" classname="com.panofusion.app.CapturePersistenceUiTest" time="59.517" />
+  <testcase name="originalCanBeSavedAndExportedBeforeAnyPanoramaExists" classname="com.panofusion.app.GalleryStorageTest" time="2.13" />
+  <testcase name="originalVideoIsPublishedWithoutTranscoding" classname="com.panofusion.app.GalleryStorageTest" time="2.369" />
+  <testcase name="realPhotoProjectRebuildFailureUndoAndArchiveRoundTrip" classname="com.panofusion.app.ProjectWorkflowIntegrationTest" time="28.471" />
+</testsuite>

@@ -46,6 +46,33 @@ Verified match(const std::vector<KeyPoint>& a, const Mat& da, Size sa, const std
     if(out.count<18 || out.count<out.matches.size()*0.4 || !checkRange(out.H))out.H.release();
     return out;
 }
+std::vector<double> frameGraph(const std::vector<std::string>& paths, Progress progress) {
+    const int n = int(paths.size());
+    if(n < 2 || n > 96) throw std::runtime_error("E_CANDIDATES: 连接检查支持 2–96 张候选帧");
+    setRNGSeed(0);
+    std::vector<detail::ImageFeatures> features(n);
+    std::vector<Size> sizes(n);
+    auto orb = ORB::create(4000);
+    for(int i=0;i<n;i++) {
+        progress("候选帧特征提取", i, n);
+        Mat image = read(paths[i]); sizes[i] = image.size();
+        detail::computeImageFeatures(orb, image, features[i]); features[i].img_idx = i;
+    }
+    std::vector<double> edges(n*n, -1.0);
+    int completed=0, total=n*(n-1)/2;
+    for(int i=0;i<n;i++) for(int j=i+1;j<n;j++) {
+        progress("候选帧连接验证", completed++, total);
+        auto v = match(features[i].keypoints, features[i].descriptors.getMat(ACCESS_READ), sizes[i],
+            features[j].keypoints, features[j].descriptors.getMat(ACCESS_READ), sizes[j]);
+        const double confidence=v.H.empty()?0:v.count/(8.0+0.3*v.matches.size());
+        if(confidence > 1.0 && std::isfinite(v.displacement)) {
+            const double side=std::max({sizes[i].width,sizes[i].height,sizes[j].width,sizes[j].height});
+            edges[i*n+j]=edges[j*n+i]=v.displacement/side;
+        }
+    }
+    progress("候选帧连接验证", total, total);
+    return edges;
+}
 Analysis analyze(const std::string& p, const std::string& prev) {
     Mat im=read(p),gray,lap; cvtColor(im,gray,COLOR_BGR2GRAY); Laplacian(gray,lap,CV_64F);
     Scalar mean,sd; meanStdDev(lap,mean,sd);

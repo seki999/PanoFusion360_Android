@@ -22,6 +22,25 @@ extern "C" JNIEXPORT jdouble JNICALL Java_com_panofusion_app_NativePanorama_stit
     catch(const std::exception& ex){fail(e,ex.what());}
     return -1;
 }
+extern "C" JNIEXPORT jdoubleArray JNICALL Java_com_panofusion_app_NativePanorama_frameGraph(JNIEnv* e,jobject,jobjectArray files,jobject callback) {
+    try {
+        std::vector<std::string> paths;
+        for(int i=0;i<e->GetArrayLength(files);i++) {
+            auto p=(jstring)e->GetObjectArrayElement(files,i);paths.push_back(str(e,p));e->DeleteLocalRef(p);
+        }
+        auto type=e->GetObjectClass(callback);
+        auto stage=e->GetMethodID(type,"stage","(Ljava/lang/String;II)V");
+        auto cancelled=e->GetMethodID(type,"cancelled","()Z");
+        auto values=pano::frameGraph(paths,[&](const std::string& name,int done,int total) {
+            if(e->CallBooleanMethod(callback,cancelled))throw std::runtime_error("E_CANCELLED: 用户已取消");
+            auto text=e->NewStringUTF(name.c_str());e->CallVoidMethod(callback,stage,text,done,total);e->DeleteLocalRef(text);
+            if(e->ExceptionCheck())throw std::runtime_error("E_CALLBACK: 连接检查已中断");
+        });
+        auto out=e->NewDoubleArray(jsize(values.size()));e->SetDoubleArrayRegion(out,0,jsize(values.size()),values.data());return out;
+    } catch(const std::bad_alloc&) {fail(e,"E_MEMORY: 连接检查内存不足");}
+    catch(const std::exception& ex) {fail(e,ex.what());}
+    return nullptr;
+}
 extern "C" JNIEXPORT jlong JNICALL Java_com_panofusion_app_NativePanorama_openLocalizer(JNIEnv* e,jobject,jobjectArray files,jstring directory) {
     try {
         std::vector<std::string> paths;
